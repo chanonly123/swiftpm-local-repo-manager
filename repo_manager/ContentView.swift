@@ -282,22 +282,31 @@ extension TabContentView {
                     }
                 }
             } else {
-                HStack(spacing: 8) {
+                Menu {
+                    Button(action: {
+                        Task { await viewModel.fetchSelected() }
+                    }) {
+                        Label("Fetch", systemImage: "arrow.down.circle")
+                    }
+
                     Button(action: {
                         viewModel.showingRecheckoutMenu = true
                     }) {
                         Label("Recheckout", systemImage: "arrow.clockwise.circle")
                     }
-                    .disabled(!viewModel.hasSelection)
 
-                    Button(action: {
+                    Divider()
+
+                    Button(role: .destructive, action: {
                         viewModel.showingHardResetConfirmation = true
                     }) {
                         Label("Hard Reset", systemImage: "exclamationmark.triangle")
                     }
-                    .disabled(!viewModel.hasSelection)
-                    .foregroundStyle(.red)
+                } label: {
+                    Label("Actions", systemImage: "ellipsis.circle")
                 }
+                .frame(width: 150)
+                .disabled(!viewModel.hasSelection)
             }
         }
     }
