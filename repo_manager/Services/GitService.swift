@@ -82,10 +82,11 @@ actor GitService {
 
     // Fetch from remote
     nonisolated func fetch(at repoURL: URL) async throws -> String {
-        try await runGitCommand(
+        let out = try? await runGitCommand(
             args: ["fetch", "--all"],
             at: repoURL
         )
+        return out ?? ""
     }
 
     // Recheckout to branch (stash, fetch, checkout -B, stash pop)
@@ -197,11 +198,36 @@ actor GitService {
         do {
             try process.run()
 
-            // Use async version to avoid blocking the thread
-            await withCheckedContinuation { continuation in
-                process.terminationHandler = { _ in
-                    continuation.resume()
+            // Use async version with 30-second timeout to avoid blocking the thread
+            let didComplete = await withTaskGroup(of: Bool.self) { group in
+                // Wait for process completion
+                group.addTask {
+                    await withCheckedContinuation { continuation in
+                        process.terminationHandler = { _ in
+                            continuation.resume()
+                        }
+                    }
+                    return true
                 }
+
+                // Timeout task (30 seconds)
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(30))
+                    return false
+                }
+
+                // Return result of first completed task
+                let result = await group.next() ?? false
+                group.cancelAll()
+                return result
+            }
+
+            // Check if timeout occurred
+            if !didComplete {
+                if process.isRunning {
+                    process.terminate()
+                }
+                throw GitServiceError.commandFailed("Git command timed out after 30 seconds")
             }
 
             let outputData = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
