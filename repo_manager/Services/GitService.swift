@@ -108,33 +108,23 @@ actor GitService {
         let status = try await getStatus(at: repoURL)
         var didStash = false
 
+        if status.hasChanges {
+            messages.append("Stashing uncommitted changes...")
+            _ = try await runGitCommand(args: ["stash"], at: repoURL)
+            didStash = true
+        }
+
         do {
-
-            if status.hasChanges {
-                messages.append("Stashing uncommitted changes...")
-                _ = try await runGitCommand(args: ["stash"], at: repoURL)
-                didStash = true
-            }
-
             // Fetch from origin
             messages.append("Fetching from origin...")
-            _ = try? await runGitCommand(args: ["fetch"], at: repoURL)
-
+            _ = try await runGitCommand(args: ["fetch"], at: repoURL)
+        } catch {
             // Checkout -B (creates or resets branch)
             messages.append("Checking out to \(targetBranch)...")
             _ = try? await runGitCommand(
                 args: ["checkout", "-B", targetBranch, "origin/\(targetBranch)"],
                 at: repoURL
             )
-        } catch {
-            // Restore stash if needed
-
-            if didStash {
-                messages.append("Restoring stashed changes...")
-                _ = try? await runGitCommand(args: ["stash", "pop"], at: repoURL)
-            }
-
-            throw error
         }
 
         // Restore stash if needed
@@ -206,10 +196,16 @@ actor GitService {
 
         do {
             try process.run()
-            process.waitUntilExit()
 
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            // Use async version to avoid blocking the thread
+            await withCheckedContinuation { continuation in
+                process.terminationHandler = { _ in
+                    continuation.resume()
+                }
+            }
+
+            let outputData = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
+            let errorData = try errorPipe.fileHandleForReading.readToEnd() ?? Data()
 
             let output = String(data: outputData, encoding: .utf8) ?? ""
             let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
