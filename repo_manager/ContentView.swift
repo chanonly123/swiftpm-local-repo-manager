@@ -139,12 +139,6 @@ extension TabContentView {
     // MARK: - Toolbar
     private var toolbar: some View {
         HStack {
-            Button(action: {
-                viewModel.selectDirectory(validate: validateDirectory, onSelected: onDirectorySelected)
-            }) {
-                Label("Select Directory", systemImage: "folder.badge.plus")
-            }
-
             if let directory = viewModel.currentDirectory {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(directory.lastPathComponent)
