@@ -174,8 +174,17 @@ actor GitService {
 
     // Get ahead/behind counts relative to upstream
     nonisolated func getAheadBehind(at repoURL: URL, branch: String) async -> (ahead: Int, behind: Int)? {
+        // Verify the remote tracking ref exists before running rev-list — avoids a noisy
+        // "ambiguous argument" error on repos that have never been fetched.
+        let remoteRef = "origin/\(branch)"
+        guard let _ = try? await runGitCommand(
+            args: ["rev-parse", "--verify", remoteRef],
+            at: repoURL,
+            logErrors: false
+        ) else { return nil }
+
         guard let output = try? await runGitCommand(
-            args: ["rev-list", "--left-right", "--count", "HEAD...origin/\(branch)"],
+            args: ["rev-list", "--left-right", "--count", "HEAD...\(remoteRef)"],
             at: repoURL
         ) else { return nil }
         let parts = output.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t")
@@ -184,7 +193,7 @@ actor GitService {
     }
 
     // Run a git command
-    private nonisolated func runGitCommand(args: [String], at repoURL: URL) async throws -> String {
+    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = args
@@ -211,10 +220,10 @@ actor GitService {
 
             return output
         } catch let error as GitServiceError {
-            print("[ERROR] runGitCommand: \(error.localizedDescription)")
+            if logErrors { print("[ERROR] runGitCommand: \(error.localizedDescription)") }
             throw error
         } catch {
-            print("[ERROR] runGitCommand: \(error.localizedDescription)")
+            if logErrors { print("[ERROR] runGitCommand: \(error.localizedDescription)") }
             throw GitServiceError.commandFailed(error.localizedDescription)
         }
     }
