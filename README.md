@@ -4,7 +4,8 @@ A native macOS app for managing multiple git repositories from a single interfac
 
 ## Video Tutorial
 
-> 📹 **Video tutorial coming soon** — placeholder for walkthrough video
+[![](https://markdown-videos-api.jorgenkh.no/youtube/nKA0XtujNEw)](https://www.youtube.com/watch?v=nKA0XtujNEw)
+
 
 ## Features
 
