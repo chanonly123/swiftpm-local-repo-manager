@@ -143,7 +143,7 @@ class RepoManagerViewModel {
 
     // Select directory and scan for repositories
     @MainActor
-    func selectDirectory(onSelected: ((URL) -> Void)? = nil) {
+    func selectDirectory(validate: ((URL) -> Bool)? = nil, onSelected: ((URL) -> Void)? = nil) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -156,6 +156,8 @@ class RepoManagerViewModel {
 
         panel.begin { [weak self] response in
             guard let self = self, response == .OK, let url = panel.url else { return }
+
+            if let validate = validate, !validate(url) { return }
 
             self.setDirectory(url)
             onSelected?(url)
@@ -398,7 +400,7 @@ class RepoManagerViewModel {
         }
 
         isPerformingOperation = false
-        if !isStopping {
+        if !isStopping && self.operationResults.contains(where: { !$0.success }) {
             showingResults = true
         }
         isStopping = false
@@ -485,15 +487,7 @@ class RepoManagerViewModel {
             print("[SUCCESS] Added \(result.success)/\(result.total) module references to \(project.name)")
             errorMessage = nil
 
-            // Show success in operation results
-            operationResults = [OperationResult(
-                repoName: project.name,
-                operation: .refresh,
-                success: true,
-                message: "Added \(result.success)/\(result.total) module references",
-                timestamp: Date()
-            )]
-            showingResults = true
+            operationResults = []
         } catch {
             print("[ERROR] Failed to add local dependencies: \(error.localizedDescription)")
             errorMessage = "Failed to add dependencies: \(error.localizedDescription)"
@@ -515,15 +509,7 @@ class RepoManagerViewModel {
             print("[SUCCESS] \(status) \(result.count) run script(s)")
             errorMessage = nil
 
-            // Show success in operation results
-            operationResults = [OperationResult(
-                repoName: project.name,
-                operation: .refresh,
-                success: true,
-                message: "\(status) \(result.count) run script(s)",
-                timestamp: Date()
-            )]
-            showingResults = true
+            operationResults = []
         } catch {
             print("[ERROR] Failed to toggle run scripts: \(error.localizedDescription)")
             errorMessage = "Failed to toggle run scripts: \(error.localizedDescription)"

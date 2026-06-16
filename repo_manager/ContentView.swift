@@ -30,6 +30,14 @@ struct ContentView: View {
                         if let tabID = tabsManager.selectedTabID {
                             tabsManager.updateTabDirectory(tabID, directoryURL: url)
                         }
+                    },
+                    validateDirectory: { url in
+                        if let existingID = tabsManager.existingTabID(for: url),
+                           existingID != tabsManager.selectedTabID {
+                            tabsManager.selectTab(existingID)
+                            return false
+                        }
+                        return true
                     }
                 )
             } else {
@@ -64,6 +72,7 @@ struct ContentView: View {
 struct TabContentView: View {
     @Bindable var viewModel: RepoManagerViewModel
     let onDirectorySelected: (URL) -> Void
+    var validateDirectory: ((URL) -> Bool)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -131,9 +140,7 @@ extension TabContentView {
     private var toolbar: some View {
         HStack {
             Button(action: {
-                viewModel.selectDirectory { url in
-                    onDirectorySelected(url)
-                }
+                viewModel.selectDirectory(validate: validateDirectory, onSelected: onDirectorySelected)
             }) {
                 Label("Select Directory", systemImage: "folder.badge.plus")
             }
@@ -323,9 +330,7 @@ extension TabContentView {
                     .foregroundStyle(.secondary)
 
                 Button(action: {
-                    viewModel.selectDirectory { url in
-                        onDirectorySelected(url)
-                    }
+                    viewModel.selectDirectory(validate: validateDirectory, onSelected: onDirectorySelected)
                 }) {
                     Label("Select Directory", systemImage: "folder.badge.plus")
                 }

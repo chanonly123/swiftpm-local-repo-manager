@@ -76,6 +76,11 @@ class TabsManager {
         }
     }
 
+    /// Returns the tab ID that already has this directory open, or nil if none.
+    func existingTabID(for directoryURL: URL) -> UUID? {
+        tabs.first { $0.directoryPath == directoryURL.path }?.id
+    }
+
     // MARK: - Persistence
 
     private func loadTabs() {

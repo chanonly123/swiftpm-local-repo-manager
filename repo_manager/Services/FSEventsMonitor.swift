@@ -8,6 +8,11 @@ class FSEventsMonitor {
     private var callback: ((URL) -> Void)?
     private(set) var isPaused = false
 
+    // Per-repo debounce: cancels and reschedules on every new event so only
+    // the final event in a burst actually triggers a git status refresh.
+    @MainActor private var debounceTasks: [String: Task<Void, Never>] = [:]
+    private let debounceDelay: Duration = .seconds(2)
+
     /// Start monitoring multiple repositories at once
     func startMonitoringMultiple(repoURLs: [URL], onChange: @escaping (URL) -> Void) {
         self.callback = onChange
@@ -22,10 +27,10 @@ class FSEventsMonitor {
 
         print("[DEBUG] Starting monitoring for \(repoURLs.count) repositories")
 
-        // Create event stream for all repository paths with higher latency to debounce
+        // Create event stream for all repository paths with 1s latency to coalesce rapid changes
         let eventStream = FolderContentMonitor.makeStream(
             paths: Array(monitoredPaths),
-            latency: 1.0  // Higher latency to coalesce rapid git command changes
+            latency: 1.0
         )
 
         // Start monitoring task
@@ -38,18 +43,17 @@ class FSEventsMonitor {
                     continue
                 }
 
-                // Ignore all events from .git directory (git internal operations)
+                // Ignore git's own internal writes
                 if event.eventPath.contains("/.git/") || event.filename.hasPrefix(".git/") {
                     continue
                 }
 
-                // Find which repo this event belongs to
+                // Find which repo this event belongs to and debounce it
                 for monitoredPath in monitoredPaths {
                     if event.eventPath.hasPrefix(monitoredPath) {
-                        // Notify on main actor with the repo URL
                         let repoURL = URL(fileURLWithPath: monitoredPath)
                         await MainActor.run {
-                            self.callback?(repoURL)
+                            self.scheduleDebounced(for: repoURL)
                         }
                         break
                     }
@@ -59,6 +63,23 @@ class FSEventsMonitor {
         }
 
         print("[DEBUG] Started monitoring \(repoURLs.count) repositories")
+    }
+
+    /// Cancel any pending debounce for this URL and schedule a fresh one.
+    /// Only the last event in a burst fires the callback after `debounceDelay`.
+    @MainActor
+    private func scheduleDebounced(for repoURL: URL) {
+        let key = repoURL.path
+        debounceTasks[key]?.cancel()
+        debounceTasks[key] = Task { [weak self] in
+            do {
+                try await Task.sleep(for: self?.debounceDelay ?? .seconds(2))
+            } catch {
+                return // cancelled — a newer event is already queued
+            }
+            self?.debounceTasks.removeValue(forKey: key)
+            self?.callback?(repoURL)
+        }
     }
 
     func pause() {
@@ -71,14 +92,18 @@ class FSEventsMonitor {
         print("[DEBUG] FSEvents monitoring resumed (app active)")
     }
 
-    /// Stop monitoring all repositories
+    /// Stop monitoring all repositories and cancel any pending debounce tasks
     func stopMonitoring() {
         monitoringTask?.cancel()
         monitoringTask = nil
+        Task { @MainActor [weak self] in
+            self?.debounceTasks.values.forEach { $0.cancel() }
+            self?.debounceTasks.removeAll()
+        }
         print("[DEBUG] Stopped monitoring repositories")
     }
 
     deinit {
-        stopMonitoring()
+        monitoringTask?.cancel()
     }
 }
