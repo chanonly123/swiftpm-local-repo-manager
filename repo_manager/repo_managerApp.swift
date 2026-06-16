@@ -13,11 +13,9 @@ struct repo_managerApp: App {
                 // Remove New Window command
             }
         }
-        .onChange(of: scenePhase) { oldPhase, newPhase in
+        .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
-                // Ensure UserDefaults are synchronized when app goes to background
-                UserDefaults.standard.synchronize()
-                print("[DEBUG] App moved to background, synchronized UserDefaults")
+                print("[DEBUG] App moved to background")
             }
         }
     }

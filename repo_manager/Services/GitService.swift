@@ -60,18 +60,6 @@ actor GitService {
     }
 
     // Get remote URL
-    nonisolated func getRemoteURL(at repoURL: URL) async throws -> String? {
-        do {
-            let output = try await runGitCommand(
-                args: ["remote", "get-url", "origin"],
-                at: repoURL
-            )
-            return output.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            return nil
-        }
-    }
-
     // Pull from remote
     nonisolated func pull(at repoURL: URL) async throws -> String {
         try await runGitCommand(
@@ -154,10 +142,6 @@ actor GitService {
         _ = try await runGitCommand(args: ["reset", "--hard", "HEAD"], at: repoURL)
 
         _ = try await runGitCommand(args: ["clean", "-f", "-d"], at: repoURL)
-
-        // Clean untracked files
-        // messages.append("Cleaning untracked files...")
-        // _ = try await runGitCommand(args: ["clean", "-fd"], at: repoURL)
 
         messages.append("✓ Successfully reset to HEAD")
         return messages.joined(separator: "\n")
@@ -290,19 +274,16 @@ actor GitService {
                 url: repoURL,
                 currentBranch: nil,
                 status: .error("Not a git repository"),
-                hasUncommittedChanges: false,
-                remoteURL: nil
+                hasUncommittedChanges: false
             )
         }
 
         do {
             async let branchTask = getCurrentBranch(at: repoURL)
             async let statusTask = getStatus(at: repoURL)
-            async let remoteTask = getRemoteURL(at: repoURL)
 
             let branch = try await branchTask
             let status = try await statusTask
-            let remote = try await remoteTask
 
             let resolvedBranch = branch.isEmpty ? "unknown" : branch
             let aheadBehind = await getAheadBehind(at: repoURL, branch: resolvedBranch)
@@ -317,7 +298,6 @@ actor GitService {
                 currentBranch: resolvedBranch,
                 status: status.hasChanges ? .uncommittedChanges : .clean,
                 hasUncommittedChanges: status.hasChanges,
-                remoteURL: remote,
                 aheadCount: aheadBehind?.ahead,
                 behindCount: aheadBehind?.behind,
                 changedFilesCount: status.hasChanges ? changedFiles : nil
@@ -329,8 +309,7 @@ actor GitService {
                 url: repoURL,
                 currentBranch: nil,
                 status: .error(error.localizedDescription),
-                hasUncommittedChanges: false,
-                remoteURL: nil
+                hasUncommittedChanges: false
             )
         }
     }

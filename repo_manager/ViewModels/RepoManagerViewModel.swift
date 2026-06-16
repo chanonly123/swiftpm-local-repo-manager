@@ -207,8 +207,7 @@ class RepoManagerViewModel {
                     url: url,
                     currentBranch: nil,
                     status: .loading,
-                    hasUncommittedChanges: false,
-                    remoteURL: nil
+                    hasUncommittedChanges: false
                 )
             }
             self.repositories = basicRepos.sorted { $0.name < $1.name }
