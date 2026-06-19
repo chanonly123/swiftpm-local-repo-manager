@@ -146,8 +146,7 @@ struct XcodeProjModifier {
     func addFileReferenceToMainGroup(
         fileName: String,
         filePath: String,
-        fileType: String,
-        encoding: Int = 4
+        fileType: String
     ) throws -> String {
         let content = try String(contentsOf: projectPath, encoding: .utf8)
 
@@ -161,8 +160,7 @@ struct XcodeProjModifier {
             uuid: fileReferenceUUID,
             fileName: fileName,
             filePath: filePath,
-            fileType: fileType,
-            encoding: encoding
+            fileType: fileType
         )
 
         var modifiedContent = insertFileReference(
@@ -198,8 +196,7 @@ struct XcodeProjModifier {
         uuid: String,
         fileName: String,
         filePath: String,
-        fileType: String,
-        encoding: Int
+        fileType: String
     ) -> String {
         return """
         \t\t\(uuid) /* \(fileName) */ = {isa = PBXFileReference; lastKnownFileType = \(fileType); name = \(fileName); path = \(filePath); sourceTree = "SOURCE_ROOT"; };\n

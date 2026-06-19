@@ -175,6 +175,5 @@ class TabsManager {
             userDefaults.set(selectedID.uuidString, forKey: selectedTabKey)
             print("[DEBUG] Saved selected tab: \(selectedID)")
         }
-        userDefaults.synchronize()
     }
 }

@@ -60,18 +60,6 @@ actor GitService {
     }
 
     // Get remote URL
-    nonisolated func getRemoteURL(at repoURL: URL) async throws -> String? {
-        do {
-            let output = try await runGitCommand(
-                args: ["remote", "get-url", "origin"],
-                at: repoURL
-            )
-            return output.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            return nil
-        }
-    }
-
     // Pull from remote
     nonisolated func pull(at repoURL: URL) async throws -> String {
         try await runGitCommand(
@@ -82,10 +70,11 @@ actor GitService {
 
     // Fetch from remote
     nonisolated func fetch(at repoURL: URL) async throws -> String {
-        try await runGitCommand(
+        let out = try? await runGitCommand(
             args: ["fetch", "--all"],
             at: repoURL
         )
+        return out ?? ""
     }
 
     // Recheckout to branch (stash, fetch, checkout -B, stash pop)
@@ -108,33 +97,23 @@ actor GitService {
         let status = try await getStatus(at: repoURL)
         var didStash = false
 
+        if status.hasChanges {
+            messages.append("Stashing uncommitted changes...")
+            _ = try await runGitCommand(args: ["stash"], at: repoURL)
+            didStash = true
+        }
+
         do {
-
-            if status.hasChanges {
-                messages.append("Stashing uncommitted changes...")
-                _ = try await runGitCommand(args: ["stash"], at: repoURL)
-                didStash = true
-            }
-
             // Fetch from origin
             messages.append("Fetching from origin...")
-            _ = try? await runGitCommand(args: ["fetch"], at: repoURL)
-
+            _ = try await runGitCommand(args: ["fetch"], at: repoURL)
+        } catch {
             // Checkout -B (creates or resets branch)
             messages.append("Checking out to \(targetBranch)...")
             _ = try? await runGitCommand(
                 args: ["checkout", "-B", targetBranch, "origin/\(targetBranch)"],
                 at: repoURL
             )
-        } catch {
-            // Restore stash if needed
-
-            if didStash {
-                messages.append("Restoring stashed changes...")
-                _ = try? await runGitCommand(args: ["stash", "pop"], at: repoURL)
-            }
-
-            throw error
         }
 
         // Restore stash if needed
@@ -163,10 +142,6 @@ actor GitService {
         _ = try await runGitCommand(args: ["reset", "--hard", "HEAD"], at: repoURL)
 
         _ = try await runGitCommand(args: ["clean", "-f", "-d"], at: repoURL)
-
-        // Clean untracked files
-        // messages.append("Cleaning untracked files...")
-        // _ = try await runGitCommand(args: ["clean", "-fd"], at: repoURL)
 
         messages.append("✓ Successfully reset to HEAD")
         return messages.joined(separator: "\n")
@@ -206,10 +181,41 @@ actor GitService {
 
         do {
             try process.run()
-            process.waitUntilExit()
 
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            // Use async version with 30-second timeout to avoid blocking the thread
+            let didComplete = await withTaskGroup(of: Bool.self) { group in
+                // Wait for process completion
+                group.addTask {
+                    await withCheckedContinuation { continuation in
+                        process.terminationHandler = { _ in
+                            continuation.resume()
+                        }
+                    }
+                    return true
+                }
+
+                // Timeout task (30 seconds)
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(30))
+                    return false
+                }
+
+                // Return result of first completed task
+                let result = await group.next() ?? false
+                group.cancelAll()
+                return result
+            }
+
+            // Check if timeout occurred
+            if !didComplete {
+                if process.isRunning {
+                    process.terminate()
+                }
+                throw GitServiceError.commandFailed("Git command timed out after 30 seconds")
+            }
+
+            let outputData = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
+            let errorData = try errorPipe.fileHandleForReading.readToEnd() ?? Data()
 
             let output = String(data: outputData, encoding: .utf8) ?? ""
             let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
@@ -268,19 +274,16 @@ actor GitService {
                 url: repoURL,
                 currentBranch: nil,
                 status: .error("Not a git repository"),
-                hasUncommittedChanges: false,
-                remoteURL: nil
+                hasUncommittedChanges: false
             )
         }
 
         do {
             async let branchTask = getCurrentBranch(at: repoURL)
             async let statusTask = getStatus(at: repoURL)
-            async let remoteTask = getRemoteURL(at: repoURL)
 
             let branch = try await branchTask
             let status = try await statusTask
-            let remote = try await remoteTask
 
             let resolvedBranch = branch.isEmpty ? "unknown" : branch
             let aheadBehind = await getAheadBehind(at: repoURL, branch: resolvedBranch)
@@ -295,7 +298,6 @@ actor GitService {
                 currentBranch: resolvedBranch,
                 status: status.hasChanges ? .uncommittedChanges : .clean,
                 hasUncommittedChanges: status.hasChanges,
-                remoteURL: remote,
                 aheadCount: aheadBehind?.ahead,
                 behindCount: aheadBehind?.behind,
                 changedFilesCount: status.hasChanges ? changedFiles : nil
@@ -307,8 +309,7 @@ actor GitService {
                 url: repoURL,
                 currentBranch: nil,
                 status: .error(error.localizedDescription),
-                hasUncommittedChanges: false,
-                remoteURL: nil
+                hasUncommittedChanges: false
             )
         }
     }
