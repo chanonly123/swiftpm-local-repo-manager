@@ -46,6 +46,26 @@ struct ContentView: View {
         }
         .textSelection(.enabled)
         .frame(minWidth: 800, minHeight: 600)
+        .navigationTitle("Repo Manager \(tabsManager.getCurrentVersion().map { "(\($0))" } ?? "")")
+        .onAppear {
+            tabsManager.checkForNewVersion()
+        }
+        .alert(
+            "New version available\n\(tabsManager.newVersion ?? "")",
+            isPresented: Binding(
+                get: { tabsManager.newVersionAlert },
+                set: { tabsManager.newVersionAlert = $0 }
+            ),
+            actions: {
+                Link("Update", destination: URL(string: "https://github.com/chanonly123/swiftpm-local-repo-manager/releases")!)
+                Button("Cancel", role: .cancel) { }
+            },
+            message: {
+                if let desc = tabsManager.newVersionDesc {
+                    Text(desc)
+                }
+            }
+        )
     }
 
     private var emptyTabView: some View {

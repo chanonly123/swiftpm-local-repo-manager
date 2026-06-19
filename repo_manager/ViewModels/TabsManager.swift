@@ -81,6 +81,41 @@ class TabsManager {
         tabs.first { $0.directoryPath == directoryURL.path }?.id
     }
 
+    // MARK: - Version Check
+
+    var newVersion: String?
+    var newVersionDesc: String?
+    var newVersionAlert: Bool = false
+
+    func getCurrentVersion() -> String? {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
+    func checkForNewVersion() {
+        struct Release: Codable {
+            let tag_name: String?
+            let body: String?
+        }
+
+        func versionToInt(_ ver: String) -> Int? {
+            Int(ver.replacingOccurrences(of: ".", with: ""))
+        }
+
+        Task { @MainActor in
+            guard let current = getCurrentVersion() else { return }
+            guard let url = URL(string: "https://api.github.com/repos/chanonly123/swiftpm-local-repo-manager/releases/latest") else { return }
+            guard let result = try? await URLSession.shared.data(from: url),
+                  let release = try? JSONDecoder().decode(Release.self, from: result.0),
+                  let tagName = release.tag_name else { return }
+            guard let newVer = versionToInt(tagName),
+                  let currentVer = versionToInt(current),
+                  newVer > currentVer else { return }
+            newVersion = tagName
+            newVersionDesc = release.body
+            newVersionAlert = true
+        }
+    }
+
     // MARK: - Persistence
 
     private func loadTabs() {
