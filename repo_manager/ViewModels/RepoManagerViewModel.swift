@@ -67,7 +67,7 @@ class RepoManagerViewModel {
     }
 
     @MainActor
-    private func refreshAllRepositoryStatuses() async {
+    func refreshAllRepositoryStatuses() async {
         guard !repositories.isEmpty, !isScanning, !isPerformingOperation else { return }
         print("[DEBUG] Refreshing all repository statuses after app became active")
         await withTaskGroup(of: (Int, GitRepo).self) { group in
@@ -329,6 +329,7 @@ class RepoManagerViewModel {
         await performOperation(on: selectedRepositories, operation: .recheckout) { repo in
             try await self.gitService.recheckout(at: repo.url)
         }
+        await refreshAllRepositoryStatuses()
     }
 
     // Recheckout selected repositories to custom branch
@@ -337,6 +338,7 @@ class RepoManagerViewModel {
         await performOperation(on: selectedRepositories, operation: .recheckout) { repo in
             try await self.gitService.recheckout(at: repo.url, toBranch: branchName)
         }
+        await refreshAllRepositoryStatuses()
     }
 
     // Hard reset selected repositories
