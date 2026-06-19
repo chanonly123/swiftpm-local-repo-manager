@@ -47,6 +47,11 @@ struct RepoRowView: View {
                 } else {
                     Text(repo.hasUncommittedChanges ? "Changes" : "Clean")
                 }
+                if repo.hasConflicts {
+                    Text("⚠️")
+                        .font(.system(size: 11))
+                        .help("Merge conflicts detected")
+                }
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)

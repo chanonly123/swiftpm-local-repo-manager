@@ -7,6 +7,7 @@ struct GitRepo: Identifiable, Hashable {
     var currentBranch: String?
     var status: RepoStatus
     var hasUncommittedChanges: Bool
+    var hasConflicts: Bool = false
     var aheadCount: Int?
     var behindCount: Int?
     var changedFilesCount: Int?

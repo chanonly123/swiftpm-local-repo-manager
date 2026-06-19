@@ -50,13 +50,23 @@ actor GitService {
     }
 
     // Get repository status
-    nonisolated func getStatus(at repoURL: URL) async throws -> (hasChanges: Bool, output: String) {
+    nonisolated func getStatus(at repoURL: URL) async throws -> (hasChanges: Bool, hasConflicts: Bool, output: String) {
         let output = try await runGitCommand(
             args: ["status", "--porcelain"],
             at: repoURL
         )
         let hasChanges = !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return (hasChanges, output)
+
+        // Active merge conflict (UU/AA/DD etc. in porcelain)
+        let conflictPrefixes = ["UU", "AA", "DD", "AU", "UA", "DU", "UD"]
+        let hasMergeConflict = output.components(separatedBy: .newlines).contains { line in
+            conflictPrefixes.contains(where: { line.hasPrefix($0) })
+        }
+        // Leftover conflict markers in file content (e.g. after a botched merge)
+        let hasMarkers = (try? await runGitCommand(args: ["grep", "-l", "--", "^<<<<<<< "], at: repoURL))
+            .map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
+
+        return (hasChanges, hasMergeConflict || hasMarkers, output)
     }
 
     // Get remote URL
@@ -310,6 +320,7 @@ actor GitService {
                 currentBranch: resolvedBranch,
                 status: status.hasChanges ? .uncommittedChanges : .clean,
                 hasUncommittedChanges: status.hasChanges,
+                hasConflicts: status.hasConflicts,
                 aheadCount: aheadBehind?.ahead,
                 behindCount: aheadBehind?.behind,
                 changedFilesCount: status.hasChanges ? changedFiles : nil
