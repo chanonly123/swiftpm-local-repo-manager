@@ -103,26 +103,38 @@ actor GitService {
             didStash = true
         }
 
+        func finish() async throws {
+            // Restore stash if needed
+            if didStash {
+                messages.append("Restoring stashed changes...")
+                _ = try await runGitCommand(args: ["stash", "pop"], at: repoURL)
+            }
+        }
+
         do {
             // Fetch from origin
             messages.append("Fetching from origin...")
             _ = try await runGitCommand(args: ["fetch"], at: repoURL)
         } catch {
+            messages.append("Fetching from origin...")
+            _ = try? await runGitCommand(args: ["remote", "prune", "origin"], at: repoURL)
+        }
+
+        do {
             // Checkout -B (creates or resets branch)
             messages.append("Checking out to \(targetBranch)...")
-            _ = try? await runGitCommand(
+            _ = try await runGitCommand(
                 args: ["checkout", "-B", targetBranch, "origin/\(targetBranch)"],
                 at: repoURL
             )
+            messages.append("✓ Successfully rechecked out to \(targetBranch)")
+        } catch {
+            try await finish()
+            throw error
         }
 
-        // Restore stash if needed
-        if didStash {
-            messages.append("Restoring stashed changes...")
-            _ = try await runGitCommand(args: ["stash", "pop"], at: repoURL)
-        }
+        try? await finish()
 
-        messages.append("✓ Successfully rechecked out to \(targetBranch)")
         return messages.joined(separator: "\n")
     }
 
