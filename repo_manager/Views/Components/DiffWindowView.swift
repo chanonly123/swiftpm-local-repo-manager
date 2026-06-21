@@ -195,6 +195,7 @@ struct DiffWindowView: View {
         do {
             try await git.stageFiles(at: repo.url, paths: paths)
             _ = try await git.commitStaged(at: repo.url, message: message)
+            NotificationCenter.default.post(name: .repoDidCommit, object: repo.url)
             DiffWindowManager.close(for: repo)
         } catch {
             commitError = error.localizedDescription
@@ -268,6 +269,10 @@ struct DiffWindowView: View {
         default: return .orange
         }
     }
+}
+
+extension Notification.Name {
+    static let repoDidCommit = Notification.Name("repoDidCommit")
 }
 
 // MARK: - Commit message editor with consistent text inset

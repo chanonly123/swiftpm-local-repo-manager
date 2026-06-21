@@ -59,6 +59,14 @@ class RepoManagerViewModel {
                 await self?.refreshAllRepositoryStatuses()
             }
         })
+        appObservers.append(center.addObserver(
+            forName: .repoDidCommit,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.refreshAllRepositoryStatuses()
+            }
+        })
     }
 
     deinit {
