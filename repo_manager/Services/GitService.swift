@@ -62,11 +62,33 @@ actor GitService {
         let hasMergeConflict = output.components(separatedBy: .newlines).contains { line in
             conflictPrefixes.contains(where: { line.hasPrefix($0) })
         }
-        // Leftover conflict markers in file content (e.g. after a botched merge)
-        let hasMarkers = (try? await runGitCommand(args: ["grep", "-l", "--", "^<<<<<<< "], at: repoURL))
-            .map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
+        return (hasChanges, hasMergeConflict, output)
+    }
 
-        return (hasChanges, hasMergeConflict || hasMarkers, output)
+    // List changed files from git status --porcelain
+    nonisolated func getChangedFiles(at repoURL: URL) async throws -> [(status: String, path: String)] {
+        let output = try await runGitCommand(args: ["status", "--porcelain"], at: repoURL)
+        return output.components(separatedBy: .newlines).compactMap { line in
+            guard line.count >= 4 else { return nil }
+            let xy = String(line.prefix(2))
+            var path = String(line.dropFirst(3))
+            if let range = path.range(of: " -> ") { path = String(path[range.upperBound...]) }
+            return path.isEmpty ? nil : (xy, path)
+        }
+    }
+
+    // Diff for a tracked file vs HEAD (staged + unstaged)
+    nonisolated func getDiff(at repoURL: URL, filePath: String) async throws -> String {
+        try await runGitCommand(args: ["diff", "HEAD", "--", filePath], at: repoURL)
+    }
+
+    // Diff for an untracked file (git diff --no-index exits 1 when diffs exist)
+    nonisolated func getDiffUntracked(at repoURL: URL, filePath: String) async throws -> String {
+        try await runGitCommand(
+            args: ["diff", "--no-index", "--", "/dev/null", filePath],
+            at: repoURL,
+            allowNonZeroExit: true
+        )
     }
 
     // Get remote URL
@@ -190,7 +212,7 @@ actor GitService {
     }
 
     // Run a git command
-    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true) async throws -> String {
+    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = args
@@ -242,7 +264,7 @@ actor GitService {
             let output = String(data: outputData, encoding: .utf8) ?? ""
             let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
 
-            if process.terminationStatus != 0 {
+            if process.terminationStatus != 0 && !allowNonZeroExit {
                 throw GitServiceError.commandFailed(errorOutput.isEmpty ? "Unknown error" : errorOutput)
             }
 

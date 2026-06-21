@@ -91,6 +91,18 @@ struct RepoRowView: View {
             .buttonStyle(.plain)
             .help("Open in Terminal")
 
+            // Diff button
+            Button(action: {
+                DiffWindowManager.open(for: repo)
+            }) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 14))
+                    .foregroundStyle(repo.hasUncommittedChanges ? .secondary : Color.secondary.opacity(0.3))
+            }
+            .buttonStyle(.plain)
+            .help("Open Diff")
+            .disabled(!repo.hasUncommittedChanges || repo.status == .loading)
+
             // Path button
             Button(action: {
                 NSWorkspace.shared.open(repo.url)
