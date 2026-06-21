@@ -141,6 +141,14 @@ struct TabContentView: View {
         .sheet(isPresented: $viewModel.showingRecheckoutMenu) {
             recheckoutMenuView
         }
+        .alert("⚠️ Force Push Warning", isPresented: $viewModel.showingForcePushConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Force Push", role: .destructive) {
+                Task { await viewModel.forcePushSelected() }
+            }
+        } message: {
+            Text("This will force-push (--force-with-lease) the current branch to origin for \(viewModel.selectedCount) selected \(viewModel.selectedCount == 1 ? "repository" : "repositories").\n\nThis may overwrite remote history.")
+        }
         .alert("⚠️ Hard Reset Warning", isPresented: $viewModel.showingHardResetConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Reset", role: .destructive) {
@@ -307,6 +315,20 @@ extension TabContentView {
                         viewModel.showingRecheckoutMenu = true
                     }) {
                         Label("Recheckout", systemImage: "arrow.clockwise.circle")
+                    }
+
+                    Divider()
+
+                    Button(action: {
+                        Task { await viewModel.pushSelected() }
+                    }) {
+                        Label("Push", systemImage: "arrow.up.circle")
+                    }
+
+                    Button(role: .destructive, action: {
+                        viewModel.showingForcePushConfirmation = true
+                    }) {
+                        Label("Force Push", systemImage: "arrow.up.circle.fill")
                     }
 
                     Divider()

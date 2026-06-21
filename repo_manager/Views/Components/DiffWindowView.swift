@@ -195,9 +195,7 @@ struct DiffWindowView: View {
         do {
             try await git.stageFiles(at: repo.url, paths: paths)
             _ = try await git.commitStaged(at: repo.url, message: message)
-            commitMessage = ""
-            checkedPaths = []
-            await loadFiles()
+            DiffWindowManager.close(for: repo)
         } catch {
             commitError = error.localizedDescription
         }

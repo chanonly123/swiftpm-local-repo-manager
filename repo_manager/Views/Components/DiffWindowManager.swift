@@ -23,4 +23,10 @@ enum DiffWindowManager {
         window.makeKeyAndOrderFront(nil)
         windows[key] = window
     }
+
+    static func close(for repo: GitRepo) {
+        let key = repo.url.path
+        windows[key]?.close()
+        windows.removeValue(forKey: key)
+    }
 }

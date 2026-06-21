@@ -16,6 +16,7 @@ class RepoManagerViewModel {
     var showingRecheckoutMenu = false
     var customBranchInput = ""
     var showingHardResetConfirmation = false
+    var showingForcePushConfirmation = false
     var xcodeProjects: [XcodeProject] = []
     private(set) var isStopping = false
 
@@ -337,6 +338,24 @@ class RepoManagerViewModel {
     func recheckoutToCustomBranch(_ branchName: String) async {
         await performOperation(on: selectedRepositories, operation: .recheckout) { repo in
             try await self.gitService.recheckout(at: repo.url, toBranch: branchName)
+        }
+        await refreshAllRepositoryStatuses()
+    }
+
+    // Push selected repositories
+    @MainActor
+    func pushSelected() async {
+        await performOperation(on: selectedRepositories, operation: .push) { repo in
+            try await self.gitService.push(at: repo.url)
+        }
+        await refreshAllRepositoryStatuses()
+    }
+
+    // Force-push selected repositories
+    @MainActor
+    func forcePushSelected() async {
+        await performOperation(on: selectedRepositories, operation: .forcePush) { repo in
+            try await self.gitService.forcePush(at: repo.url)
         }
         await refreshAllRepositoryStatuses()
     }

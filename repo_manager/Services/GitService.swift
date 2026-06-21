@@ -101,6 +101,16 @@ actor GitService {
         )
     }
 
+    // Push current branch to origin
+    nonisolated func push(at repoURL: URL) async throws -> String {
+        try await runGitCommand(args: ["push", "origin", "HEAD"], at: repoURL)
+    }
+
+    // Force-push current branch to origin
+    nonisolated func forcePush(at repoURL: URL) async throws -> String {
+        try await runGitCommand(args: ["push", "--force-with-lease", "origin", "HEAD"], at: repoURL)
+    }
+
     // Get remote URL
     // Pull from remote
     nonisolated func pull(at repoURL: URL) async throws -> String {
