@@ -24,6 +24,10 @@ struct DiffWindowView: View {
     @State private var loadingFiles = true
     @State private var loadingDiff = false
     @State private var tooLarge = false
+    @State private var checkedPaths: Set<String> = []
+    @State private var commitMessage = ""
+    @State private var isCommitting = false
+    @State private var commitError: String?
 
     private let git = GitService()
     private let sizeLimit = 100_000
@@ -68,12 +72,66 @@ struct DiffWindowView: View {
                 }
                 .listStyle(.sidebar)
             }
+            Divider()
+            commitPanel
         }
+    }
+
+    private var commitPanel: some View {
+        VStack(spacing: 6) {
+            CommitMessageEditor(text: $commitMessage)
+                .frame(height: 60)
+                .background(Color(nsColor: .textBackgroundColor))
+                .cornerRadius(5)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                )
+                .overlay(alignment: .topLeading) {
+                    if commitMessage.isEmpty {
+                        Text("Commit message")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 5)
+                            .allowsHitTesting(false)
+                    }
+                }
+
+            if let error = commitError {
+                Text(error)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Button(action: { Task { await performCommit() } }) {
+                HStack(spacing: 4) {
+                    if isCommitting { ProgressView().scaleEffect(0.6).frame(width: 12, height: 12) }
+                    Text("Commit")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCommitting || checkedPaths.isEmpty)
+        }
+        .padding(8)
     }
 
     @ViewBuilder
     private func fileRow(_ entry: FileEntry) -> some View {
         HStack(spacing: 6) {
+            Toggle("", isOn: Binding(
+                get: { checkedPaths.contains(entry.id) },
+                set: { checked in
+                    if checked { checkedPaths.insert(entry.id) }
+                    else { checkedPaths.remove(entry.id) }
+                }
+            ))
+            .toggleStyle(.checkbox)
+            .labelsHidden()
+
             Text(badge(entry.status))
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
                 .foregroundStyle(.white)
@@ -127,12 +185,31 @@ struct DiffWindowView: View {
 
     // MARK: - Data loading
 
+    private func performCommit() async {
+        let message = commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let paths = files.filter { checkedPaths.contains($0.id) }.map { $0.path }
+        guard !message.isEmpty, !paths.isEmpty else { return }
+        isCommitting = true
+        commitError = nil
+        defer { isCommitting = false }
+        do {
+            try await git.stageFiles(at: repo.url, paths: paths)
+            _ = try await git.commitStaged(at: repo.url, message: message)
+            commitMessage = ""
+            checkedPaths = []
+            await loadFiles()
+        } catch {
+            commitError = error.localizedDescription
+        }
+    }
+
     private func loadFiles() async {
         loadingFiles = true
         defer { loadingFiles = false }
         do {
             let raw = try await git.getChangedFiles(at: repo.url)
             files = raw.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
+            checkedPaths = Set(files.map { $0.id })
             if let first = files.first {
                 selectedPath = first.id
             }
@@ -191,6 +268,50 @@ struct DiffWindowView: View {
         case "!": return .gray
         case "+": return .green
         default: return .orange
+        }
+    }
+}
+
+// MARK: - Commit message editor with consistent text inset
+
+private struct CommitMessageEditor: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        guard let tv = scrollView.documentView as? NSTextView else { return scrollView }
+        tv.font = NSFont.systemFont(ofSize: 12)
+        tv.textContainerInset = NSSize(width: 4, height: 5)
+        tv.textContainer?.lineFragmentPadding = 1
+        tv.isRichText = false
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.drawsBackground = false
+        tv.delegate = context.coordinator
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = false
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let tv = scrollView.documentView as? NSTextView else { return }
+        // Never touch the text storage while the user is actively typing — causes out-of-bounds crash
+        guard !context.coordinator.isEditing else { return }
+        if tv.string != text { tv.string = text }
+    }
+
+    class Coordinator: NSObject, NSTextViewDelegate {
+        @Binding var text: String
+        var isEditing = false
+        init(text: Binding<String>) { _text = text }
+
+        func textDidBeginEditing(_ notification: Notification) { isEditing = true }
+        func textDidEndEditing(_ notification: Notification) { isEditing = false }
+
+        func textDidChange(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            text = tv.string
         }
     }
 }

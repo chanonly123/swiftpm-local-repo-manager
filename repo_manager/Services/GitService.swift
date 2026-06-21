@@ -77,6 +77,16 @@ actor GitService {
         }
     }
 
+    // Stage specific files
+    nonisolated func stageFiles(at repoURL: URL, paths: [String]) async throws {
+        _ = try await runGitCommand(args: ["add", "--"] + paths, at: repoURL)
+    }
+
+    // Commit currently staged changes
+    nonisolated func commitStaged(at repoURL: URL, message: String) async throws -> String {
+        try await runGitCommand(args: ["commit", "-m", message], at: repoURL)
+    }
+
     // Diff for a tracked file vs HEAD (staged + unstaged)
     nonisolated func getDiff(at repoURL: URL, filePath: String) async throws -> String {
         try await runGitCommand(args: ["diff", "HEAD", "--", filePath], at: repoURL)
