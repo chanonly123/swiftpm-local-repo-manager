@@ -8,11 +8,20 @@ private struct FileEntry: Identifiable {
     var fileName: String { URL(fileURLWithPath: path).lastPathComponent }
 }
 
+private struct CommitEntry: Identifiable {
+    let id: String          // full hash
+    let shortHash: String
+    let subject: String
+    let author: String
+    let relativeDate: String
+}
+
 private struct DiffLine: Identifiable {
     let id: Int
     let text: String
     let kind: Kind
-    enum Kind { case added, removed, hunk, meta, context }
+    var showSeparator = false   // draw a horizontal rule above this line (file boundary)
+    enum Kind { case added, removed, hunk, meta, context, fileHeader }
 }
 
 struct DiffWindowView: View {
@@ -29,26 +38,43 @@ struct DiffWindowView: View {
     @State private var isCommitting = false
     @State private var commitError: String?
 
+    @State private var commits: [CommitEntry] = []
+    @State private var selectedCommit: String?
+    @State private var loadingCommits = true
+    @State private var loadingMoreCommits = false
+    @State private var hasMoreCommits = true
+
     private let git = GitService()
     private let sizeLimit = 100_000
+    private let commitPageSize = 10
 
     var body: some View {
         HSplitView {
-            fileListPanel
-                .frame(minWidth: 180, idealWidth: 220, maxWidth: 320)
+            sidebarPanel
+                .frame(minWidth: 200, idealWidth: 240, maxWidth: 340)
             diffPanel
                 .frame(minWidth: 400, maxWidth: .infinity)
         }
         .frame(minWidth: 700, minHeight: 450)
-        .task { await loadFiles() }
+        .task {
+            await loadFiles()
+            await loadCommits(reset: true)
+        }
         .onChange(of: selectedPath) { _, path in
             guard let path, let entry = files.first(where: { $0.id == path }) else { return }
+            selectedCommit = nil
             Task { await loadDiff(entry: entry) }
+        }
+        .onChange(of: selectedCommit) { _, hash in
+            guard let hash else { return }
+            selectedPath = nil
+            Task { await loadCommitDiff(hash: hash) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .repoFilesDidChange)) { note in
             guard (note.object as? URL) == repo.url else { return }
             Task {
                 await loadFiles()
+                await loadCommits(reset: true)
                 if let path = selectedPath, let entry = files.first(where: { $0.id == path }) {
                     await loadDiff(entry: entry)
                 }
@@ -56,16 +82,31 @@ struct DiffWindowView: View {
         }
     }
 
-    // MARK: - File list
+    // MARK: - Sidebar (Changed files + History)
 
-    private var fileListPanel: some View {
+    private var sidebarPanel: some View {
+        VSplitView {
+            fileListSection
+                .frame(minHeight: 160)
+            historySection
+                .frame(minHeight: 140)
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+    }
+
+    // MARK: - Changed files section
+
+    private var fileListSection: some View {
         VStack(spacing: 0) {
-            Text("CHANGED FILES")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+            sectionHeader("CHANGED FILES")
             Divider()
             if loadingFiles {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -84,6 +125,71 @@ struct DiffWindowView: View {
             Divider()
             commitPanel
         }
+    }
+
+    // MARK: - History section
+
+    private var historySection: some View {
+        VStack(spacing: 0) {
+            sectionHeader("HISTORY")
+            Divider()
+            if loadingCommits {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if commits.isEmpty {
+                Text("No commits")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: $selectedCommit) {
+                    ForEach(commits) { commit in
+                        commitRow(commit).tag(commit.id)
+                    }
+                    if hasMoreCommits {
+                        Button(action: { Task { await loadCommits(reset: false) } }) {
+                            HStack(spacing: 6) {
+                                if loadingMoreCommits {
+                                    ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
+                                }
+                                Text("Load more")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(loadingMoreCommits)
+                        .padding(.vertical, 2)
+                    }
+                }
+                .listStyle(.sidebar)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func commitRow(_ commit: CommitEntry) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(commit.subject)
+                .font(.system(size: 12))
+                .lineLimit(1)
+            HStack(spacing: 4) {
+                Text(commit.shortHash)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text("·")
+                    .foregroundStyle(.secondary)
+                Text(commit.author)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text(commit.relativeDate)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 2)
+        .help("\(commit.shortHash) — \(commit.subject)")
     }
 
     private var hasConflicts: Bool {
@@ -176,7 +282,7 @@ struct DiffWindowView: View {
 
     private var diffPanel: some View {
         VStack(spacing: 0) {
-            Text(selectedPath ?? "")
+            Text(diffHeaderText)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -189,12 +295,21 @@ struct DiffWindowView: View {
         }
     }
 
+    private var diffHeaderText: String {
+        if let path = selectedPath { return path }
+        if let hash = selectedCommit,
+           let commit = commits.first(where: { $0.id == hash }) {
+            return "\(commit.shortHash)  \(commit.subject)"
+        }
+        return ""
+    }
+
     @ViewBuilder
     private var diffContent: some View {
         if loadingDiff {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if selectedPath == nil {
-            Text("Select a file to view changes")
+        } else if selectedPath == nil && selectedCommit == nil {
+            Text("Select a file or commit to view changes")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if tooLarge {
@@ -270,19 +385,78 @@ struct DiffWindowView: View {
         }
     }
 
-    private func parseDiff(_ text: String) -> [DiffLine] {
-        text.components(separatedBy: .newlines)
-            .enumerated()
-            .compactMap { i, line -> DiffLine? in
-                if line.hasPrefix("diff --git") || line.hasPrefix("index ") { return nil }
-                let kind: DiffLine.Kind
-                if line.hasPrefix("+++") || line.hasPrefix("---") { kind = .meta }
-                else if line.hasPrefix("+") { kind = .added }
-                else if line.hasPrefix("-") { kind = .removed }
-                else if line.hasPrefix("@@") { kind = .hunk }
-                else { kind = .context }
-                return DiffLine(id: i, text: line, kind: kind)
+    private func loadCommits(reset: Bool) async {
+        if reset {
+            loadingCommits = true
+            defer { loadingCommits = false }
+            do {
+                let raw = try await git.getCommitHistory(at: repo.url, skip: 0, limit: commitPageSize)
+                commits = raw.map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate) }
+                hasMoreCommits = raw.count == commitPageSize
+            } catch {
+                print("[ERROR] DiffWindowView loadCommits: \(error)")
             }
+        } else {
+            guard !loadingMoreCommits else { return }
+            loadingMoreCommits = true
+            defer { loadingMoreCommits = false }
+            do {
+                let raw = try await git.getCommitHistory(at: repo.url, skip: commits.count, limit: commitPageSize)
+                let existing = Set(commits.map { $0.id })
+                let newEntries = raw
+                    .filter { !existing.contains($0.hash) }
+                    .map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate) }
+                commits.append(contentsOf: newEntries)
+                hasMoreCommits = raw.count == commitPageSize
+            } catch {
+                print("[ERROR] DiffWindowView loadCommits(more): \(error)")
+            }
+        }
+    }
+
+    private func loadCommitDiff(hash: String) async {
+        loadingDiff = true
+        tooLarge = false
+        diffLines = []
+        defer { loadingDiff = false }
+        do {
+            let raw = try await git.getCommitDiff(at: repo.url, hash: hash)
+            guard raw.count <= sizeLimit else { tooLarge = true; return }
+            diffLines = parseDiff(raw)
+        } catch {
+            print("[ERROR] DiffWindowView loadCommitDiff: \(error)")
+        }
+    }
+
+    private func parseDiff(_ text: String) -> [DiffLine] {
+        var result: [DiffLine] = []
+        var fileCount = 0
+        for (i, line) in text.components(separatedBy: .newlines).enumerated() {
+            if line.hasPrefix("diff --git") {
+                fileCount += 1
+                // Show the file path as a header, with a separator before every file after the first
+                result.append(DiffLine(id: i, text: filePath(fromDiffGit: line), kind: .fileHeader, showSeparator: fileCount > 1))
+                continue
+            }
+            if line.hasPrefix("index ") { continue }
+            let kind: DiffLine.Kind
+            if line.hasPrefix("+++") || line.hasPrefix("---") { kind = .meta }
+            else if line.hasPrefix("+") { kind = .added }
+            else if line.hasPrefix("-") { kind = .removed }
+            else if line.hasPrefix("@@") { kind = .hunk }
+            else { kind = .context }
+            result.append(DiffLine(id: i, text: line, kind: kind))
+        }
+        return result
+    }
+
+    // Extract the file path from a "diff --git a/path b/path" line
+    private func filePath(fromDiffGit line: String) -> String {
+        let body = line.dropFirst("diff --git ".count)
+        if let range = body.range(of: " b/") {
+            return String(body[range.upperBound...])
+        }
+        return String(body)
     }
 
     // MARK: - Status badge helpers
@@ -359,23 +533,50 @@ private struct CommitMessageEditor: NSViewRepresentable {
 
 // MARK: - NSTextView wrapper for multi-line selection
 
+private extension NSAttributedString.Key {
+    static let fileSeparator = NSAttributedString.Key("diffFileSeparator")
+}
+
+// NSTextView that draws a full-width horizontal rule above any line carrying .fileSeparator
+private final class DiffNSTextView: NSTextView {
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let lm = layoutManager, let tc = textContainer, let ts = textStorage else { return }
+        let inset = textContainerInset
+        ts.enumerateAttribute(.fileSeparator, in: NSRange(location: 0, length: ts.length)) { value, range, _ in
+            guard value != nil else { return }
+            let glyphRange = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let rect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+            let height: CGFloat = 4
+            let y = (rect.minY + inset.height - 12).rounded()
+            NSColor.tertiaryLabelColor.setFill()
+            NSRect(x: 0, y: y, width: bounds.width, height: height).fill()
+        }
+    }
+}
+
 private struct DiffTextView: NSViewRepresentable {
     let lines: [DiffLine]
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
+        let scrollView = NSScrollView()
         scrollView.hasHorizontalScroller = false
         scrollView.hasVerticalScroller = true
-        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+        scrollView.drawsBackground = false
+
+        let contentSize = scrollView.contentSize
+        let textView = DiffNSTextView(frame: NSRect(origin: .zero, size: contentSize))
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
-                                                       height: CGFloat.greatestFiniteMagnitude)
+        textView.autoresizingMask = [.width]
         textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: contentSize.width,
+                                                       height: CGFloat.greatestFiniteMagnitude)
+        scrollView.documentView = textView
         return scrollView
     }
 
@@ -383,6 +584,19 @@ private struct DiffTextView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         let attrString = NSMutableAttributedString()
         for line in lines {
+            if line.kind == .fileHeader {
+                let para = NSMutableParagraphStyle()
+                para.paragraphSpacingBefore = line.showSeparator ? 24 : 2
+                para.paragraphSpacing = 4
+                var attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: para
+                ]
+                if line.showSeparator { attrs[.fileSeparator] = true }
+                attrString.append(NSAttributedString(string: line.text + "\n", attributes: attrs))
+                continue
+            }
             let (fg, bg) = nsColors(line.kind)
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
@@ -392,15 +606,17 @@ private struct DiffTextView: NSViewRepresentable {
             attrString.append(NSAttributedString(string: line.text + "\n", attributes: attrs))
         }
         textView.textStorage?.setAttributedString(attrString)
+        textView.needsDisplay = true
     }
 
     private func nsColors(_ kind: DiffLine.Kind) -> (NSColor, NSColor) {
         switch kind {
-        case .added:   return (.labelColor, NSColor.systemGreen.withAlphaComponent(0.15))
-        case .removed: return (.labelColor, NSColor.systemRed.withAlphaComponent(0.15))
-        case .hunk:    return (.systemBlue, NSColor.systemBlue.withAlphaComponent(0.06))
-        case .meta:    return (.secondaryLabelColor, .clear)
-        case .context: return (.labelColor, .clear)
+        case .added:      return (.labelColor, NSColor.systemGreen.withAlphaComponent(0.15))
+        case .removed:    return (.labelColor, NSColor.systemRed.withAlphaComponent(0.15))
+        case .hunk:       return (.systemBlue, NSColor.systemBlue.withAlphaComponent(0.06))
+        case .meta:       return (.secondaryLabelColor, .clear)
+        case .context:    return (.labelColor, .clear)
+        case .fileHeader: return (.labelColor, .clear)
         }
     }
 }

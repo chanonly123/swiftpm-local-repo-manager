@@ -77,6 +77,27 @@ actor GitService {
         }
     }
 
+    // Commit history (paged) — newest first
+    nonisolated func getCommitHistory(at repoURL: URL, skip: Int, limit: Int) async throws -> [(hash: String, shortHash: String, subject: String, author: String, relativeDate: String)] {
+        // Unit-separator (\x1f) between fields keeps subjects with spaces intact
+        let format = "%H%x1f%h%x1f%s%x1f%an%x1f%ar"
+        let output = try await runGitCommand(
+            args: ["log", "--skip=\(skip)", "-n", "\(limit)", "--pretty=format:\(format)"],
+            at: repoURL,
+            allowNonZeroExit: true // empty repo (no commits yet) exits non-zero
+        )
+        return output.components(separatedBy: .newlines).compactMap { line in
+            let parts = line.components(separatedBy: "\u{1f}")
+            guard parts.count == 5 else { return nil }
+            return (parts[0], parts[1], parts[2], parts[3], parts[4])
+        }
+    }
+
+    // Full diff for a single commit
+    nonisolated func getCommitDiff(at repoURL: URL, hash: String) async throws -> String {
+        try await runGitCommand(args: ["show", "--no-color", hash], at: repoURL)
+    }
+
     // Stage specific files
     nonisolated func stageFiles(at repoURL: URL, paths: [String]) async throws {
         _ = try await runGitCommand(args: ["add", "--"] + paths, at: repoURL)
