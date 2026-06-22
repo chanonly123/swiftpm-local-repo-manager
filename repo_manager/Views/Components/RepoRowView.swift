@@ -4,7 +4,12 @@ struct RepoRowView: View {
     let repo: GitRepo
     let isSelected: Bool
     let isOperating: Bool
+    let xcodeProjects: [XcodeProject]
+    let isPerformingOperation: Bool
     let onToggle: () -> Void
+    var onAddDependencies: (XcodeProject) -> Void = { _ in }
+    var onRemoveDependencies: (XcodeProject) -> Void = { _ in }
+    var onToggleRunScripts: (XcodeProject) -> Void = { _ in }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -80,6 +85,30 @@ struct RepoRowView: View {
 
             Spacer()
 
+            // Xcode tasks menu (only when this repo contains Xcode projects)
+            if !xcodeProjects.isEmpty {
+                Menu {
+                    if xcodeProjects.count == 1 {
+                        xcodeActions(for: xcodeProjects[0])
+                    } else {
+                        ForEach(xcodeProjects) { project in
+                            Menu(project.relativePath(from: repo.url)) {
+                                xcodeActions(for: project)
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "hammer")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Xcode Tasks")
+                .disabled(isPerformingOperation)
+            }
+
             // Terminal button
             Button(action: {
                 openInTerminal(url: repo.url)
@@ -123,6 +152,19 @@ struct RepoRowView: View {
         )
         .cornerRadius(4)
         .opacity(isOperating ? 0.8 : 1.0)
+    }
+
+    @ViewBuilder
+    private func xcodeActions(for project: XcodeProject) -> some View {
+        Button(action: { onAddDependencies(project) }) {
+            Label("Add Local Dependencies", systemImage: "link.badge.plus")
+        }
+        Button(action: { onRemoveDependencies(project) }) {
+            Label("Remove Local Dependencies", systemImage: "link.badge.minus")
+        }
+        Button(action: { onToggleRunScripts(project) }) {
+            Label("Toggle Run Scripts", systemImage: "play.slash")
+        }
     }
 
     @ViewBuilder

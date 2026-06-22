@@ -41,6 +41,12 @@ class RepoManagerViewModel {
         repositories.contains { $0.status == .loading }
     }
 
+    // Xcode projects located inside a specific repository
+    func xcodeProjects(for repo: GitRepo) -> [XcodeProject] {
+        let repoPrefix = repo.url.path.hasSuffix("/") ? repo.url.path : repo.url.path + "/"
+        return xcodeProjects.filter { $0.projectPath.path.hasPrefix(repoPrefix) }
+    }
+
     init() {
         let center = NotificationCenter.default
         appObservers.append(center.addObserver(

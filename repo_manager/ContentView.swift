@@ -184,49 +184,6 @@ extension TabContentView {
 
             Spacer()
 
-            // Xcode tasks menu
-            if !viewModel.xcodeProjects.isEmpty, let currentDir = viewModel.currentDirectory {
-                Menu {
-                    ForEach(viewModel.xcodeProjects) { project in
-                        Menu(project.relativePath(from: currentDir)) {
-                            Button(action: {
-                                Task {
-                                    await viewModel.addLocalDependencies(to: project)
-                                }
-                            }) {
-                                Label("Add Local Dependencies", systemImage: "link.badge.plus")
-                            }
-                            .disabled(viewModel.isPerformingOperation)
-
-                            Button(action: {
-                                Task {
-                                    await viewModel.removeLocalDependencies(from: project)
-                                }
-                            }) {
-                                Label("Remove Local Dependencies", systemImage: "link.badge.minus")
-                            }
-                            .disabled(viewModel.isPerformingOperation)
-
-                            Button(action: {
-                                Task {
-                                    await viewModel.toggleRunScripts(for: project)
-                                }
-                            }) {
-                                Label("Toggle Run Scripts", systemImage: "play.slash")
-                            }
-                            .disabled(viewModel.isPerformingOperation)
-                        }
-                    }
-                } label: {
-                    Label("Xcode Tasks (\(viewModel.xcodeProjects.count))", systemImage: "hammer")
-                }
-                .frame(width: 200)
-                .disabled(viewModel.isPerformingOperation)
-
-                Divider()
-                    .frame(height: 20)
-            }
-
             Button(action: {
                 Task {
                     await viewModel.scanRepositories()
@@ -247,8 +204,19 @@ extension TabContentView {
                         repo: repo,
                         isSelected: viewModel.selectedRepoIDs.contains(repo.id),
                         isOperating: viewModel.operatingRepoIDs.contains(repo.id),
+                        xcodeProjects: viewModel.xcodeProjects(for: repo),
+                        isPerformingOperation: viewModel.isPerformingOperation,
                         onToggle: {
                             viewModel.toggleSelection(for: repo)
+                        },
+                        onAddDependencies: { project in
+                            Task { await viewModel.addLocalDependencies(to: project) }
+                        },
+                        onRemoveDependencies: { project in
+                            Task { await viewModel.removeLocalDependencies(from: project) }
+                        },
+                        onToggleRunScripts: { project in
+                            Task { await viewModel.toggleRunScripts(for: project) }
                         }
                     )
                 }
