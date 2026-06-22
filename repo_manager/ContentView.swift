@@ -94,6 +94,8 @@ struct TabContentView: View {
     let onDirectorySelected: (URL) -> Void
     var validateDirectory: ((URL) -> Bool)? = nil
 
+    @State private var showingUpdateConfirmation = false
+
     var body: some View {
         VStack(spacing: 0) {
             // Toolbar
@@ -159,6 +161,18 @@ struct TabContentView: View {
         } message: {
             Text("This will permanently discard ALL uncommitted changes and untracked files in \(viewModel.selectedCount) selected \(viewModel.selectedCount == 1 ? "repository" : "repositories").\n\nThis action CANNOT be undone.")
         }
+        .alert("Update & Restart?", isPresented: $showingUpdateConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Update & Restart") {
+                do {
+                    try AppUpdater.updateAndRestart()
+                } catch {
+                    viewModel.errorMessage = error.localizedDescription
+                }
+            }
+        } message: {
+            Text("This will quit the app, pull the latest changes, rebuild with run.sh, and relaunch.\n\nBuild progress opens in a new Terminal window.")
+        }
     }
 }
 
@@ -183,6 +197,15 @@ extension TabContentView {
             }
 
             Spacer()
+
+            if AppUpdater.canUpdate {
+                Button(action: {
+                    showingUpdateConfirmation = true
+                }) {
+                    Label("Update App", systemImage: "arrow.down.app")
+                }
+                .help("Pull the latest changes, rebuild, and relaunch the app")
+            }
 
             Button(action: {
                 Task {
