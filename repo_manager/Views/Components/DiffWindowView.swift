@@ -74,7 +74,9 @@ struct DiffWindowView: View {
             guard (note.object as? URL) == repo.url else { return }
             Task {
                 await loadFiles()
-                await loadCommits(reset: true)
+                await refreshCommits()
+                // Refresh the diff only for a currently-selected file (its contents may have changed).
+                // A selected commit's diff is historical and doesn't change on a working-tree refresh.
                 if let path = selectedPath, let entry = files.first(where: { $0.id == path }) {
                     await loadDiff(entry: entry)
                 }
@@ -359,10 +361,19 @@ struct DiffWindowView: View {
         defer { loadingFiles = false }
         do {
             let raw = try await git.getChangedFiles(at: repo.url)
+            let previousIDs = Set(files.map { $0.id })
             files = raw.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
-            checkedPaths = Set(files.map { $0.id })
-            if let first = files.first {
-                selectedPath = first.id
+            let currentIDs = Set(files.map { $0.id })
+            // Preserve the user's checkbox choices; auto-check only newly-appeared files
+            let appeared = currentIDs.subtracting(previousIDs)
+            checkedPaths = checkedPaths.intersection(currentIDs).union(appeared)
+            // Only auto-select the first file on the initial load (nothing selected yet).
+            if selectedPath == nil && selectedCommit == nil {
+                selectedPath = files.first?.id
+            } else if let path = selectedPath, !currentIDs.contains(path) {
+                // The selected file is gone (committed/discarded) — clear the stale diff.
+                selectedPath = nil
+                diffLines = []
             }
         } catch {
             print("[ERROR] DiffWindowView loadFiles: \(error)")
@@ -411,6 +422,22 @@ struct DiffWindowView: View {
             } catch {
                 print("[ERROR] DiffWindowView loadCommits(more): \(error)")
             }
+        }
+    }
+
+    // Re-fetch history without collapsing the loaded page count or losing the selection.
+    private func refreshCommits() async {
+        let count = max(commitPageSize, commits.count)
+        do {
+            let raw = try await git.getCommitHistory(at: repo.url, skip: 0, limit: count)
+            commits = raw.map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate) }
+            hasMoreCommits = raw.count == count
+            // Only drop the selection if the selected commit no longer exists (e.g. history rewritten)
+            if let sel = selectedCommit, !commits.contains(where: { $0.id == sel }) {
+                selectedCommit = nil
+            }
+        } catch {
+            print("[ERROR] DiffWindowView refreshCommits: \(error)")
         }
     }
 
@@ -586,10 +613,10 @@ private struct DiffTextView: NSViewRepresentable {
         for line in lines {
             if line.kind == .fileHeader {
                 let para = NSMutableParagraphStyle()
-                para.paragraphSpacingBefore = line.showSeparator ? 24 : 2
+                para.paragraphSpacingBefore = line.showSeparator ? 100 : 2
                 para.paragraphSpacing = 4
                 var attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
+                    .font: NSFont.monospacedSystemFont(ofSize: 20, weight: .bold),
                     .foregroundColor: NSColor.labelColor,
                     .paragraphStyle: para
                 ]

@@ -10,6 +10,9 @@ struct RepoRowView: View {
     var onAddDependencies: (XcodeProject) -> Void = { _ in }
     var onRemoveDependencies: (XcodeProject) -> Void = { _ in }
     var onToggleRunScripts: (XcodeProject) -> Void = { _ in }
+    var onCreateBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
+
+    @State private var showNewBranchSheet = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -120,17 +123,33 @@ struct RepoRowView: View {
             .buttonStyle(.plain)
             .help("Open in Terminal")
 
-            // Diff button
+            // Git operations menu
+            Menu {
+                Button(action: { showNewBranchSheet = true }) {
+                    Label("Create New Branch…", systemImage: "arrow.branch")
+                }
+            } label: {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Git Operations")
+            .disabled(repo.status == .loading || isPerformingOperation)
+
+            // Diff / History button
             Button(action: {
                 DiffWindowManager.open(for: repo)
             }) {
                 Image(systemName: "arrow.left.arrow.right")
                     .font(.system(size: 14))
-                    .foregroundStyle(repo.hasUncommittedChanges ? .secondary : Color.secondary.opacity(0.3))
+                    .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Open Diff")
-            .disabled(!repo.hasUncommittedChanges || repo.status == .loading)
+            .help("Open Diff & History")
+            .disabled(repo.status == .loading)
 
             // Path button
             Button(action: {
@@ -152,6 +171,11 @@ struct RepoRowView: View {
         )
         .cornerRadius(4)
         .opacity(isOperating ? 0.8 : 1.0)
+        .sheet(isPresented: $showNewBranchSheet) {
+            NewBranchSheet(repo: repo) { name, stashChanges in
+                onCreateBranch(repo, name, stashChanges)
+            }
+        }
     }
 
     @ViewBuilder

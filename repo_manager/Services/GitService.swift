@@ -222,6 +222,26 @@ actor GitService {
         return messages.joined(separator: "\n")
     }
 
+    // Create and switch to a new branch.
+    // If stashChanges is true, uncommitted changes are stashed first so the new branch starts clean;
+    // otherwise `git checkout -b` carries the working-tree changes over to the new branch.
+    nonisolated func createBranch(at repoURL: URL, name: String, stashChanges: Bool) async throws -> String {
+        var messages: [String] = []
+
+        if stashChanges {
+            let status = try await getStatus(at: repoURL)
+            if status.hasChanges {
+                messages.append("Stashing uncommitted changes...")
+                _ = try await runGitCommand(args: ["stash", "push", "--include-untracked"], at: repoURL)
+            }
+        }
+
+        messages.append("Creating branch \(name)...")
+        _ = try await runGitCommand(args: ["checkout", "-b", name], at: repoURL)
+        messages.append("✓ Created and switched to \(name)")
+        return messages.joined(separator: "\n")
+    }
+
     // Hard reset to HEAD (discards all uncommitted changes)
     nonisolated func hardReset(at repoURL: URL) async throws -> String {
         var messages: [String] = []

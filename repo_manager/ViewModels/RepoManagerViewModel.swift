@@ -377,6 +377,15 @@ class RepoManagerViewModel {
         await refreshAllRepositoryStatuses()
     }
 
+    // Create a new branch in a single repository
+    @MainActor
+    func createBranch(for repo: GitRepo, name: String, stashChanges: Bool) async {
+        await performOperation(on: [repo], operation: .createBranch) { repo in
+            try await self.gitService.createBranch(at: repo.url, name: name, stashChanges: stashChanges)
+        }
+        await refreshAllRepositoryStatuses()
+    }
+
     // Hard reset selected repositories
     @MainActor
     func hardResetSelected() async {

@@ -17,5 +17,6 @@ struct OperationResult: Identifiable {
         case forcePush = "Force Push"
         case status = "Status"
         case refresh = "Refresh"
+        case createBranch = "Create Branch"
     }
 }

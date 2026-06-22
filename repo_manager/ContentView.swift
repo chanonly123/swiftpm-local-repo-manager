@@ -247,6 +247,9 @@ extension TabContentView {
                         },
                         onToggleRunScripts: { project in
                             Task { await viewModel.toggleRunScripts(for: project) }
+                        },
+                        onCreateBranch: { targetRepo, name, stashChanges in
+                            Task { await viewModel.createBranch(for: targetRepo, name: name, stashChanges: stashChanges) }
                         }
                     )
                 }
