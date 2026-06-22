@@ -45,6 +45,15 @@ struct DiffWindowView: View {
             guard let path, let entry = files.first(where: { $0.id == path }) else { return }
             Task { await loadDiff(entry: entry) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .repoFilesDidChange)) { note in
+            guard (note.object as? URL) == repo.url else { return }
+            Task {
+                await loadFiles()
+                if let path = selectedPath, let entry = files.first(where: { $0.id == path }) {
+                    await loadDiff(entry: entry)
+                }
+            }
+        }
     }
 
     // MARK: - File list
@@ -235,7 +244,7 @@ struct DiffWindowView: View {
         defer { loadingFiles = false }
         do {
             let raw = try await git.getChangedFiles(at: repo.url)
-            files = raw.filter { !$0.path.hasPrefix(".") }.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
+            files = raw.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
             checkedPaths = Set(files.map { $0.id })
             if let first = files.first {
                 selectedPath = first.id
@@ -301,6 +310,7 @@ struct DiffWindowView: View {
 
 extension Notification.Name {
     static let repoDidCommit = Notification.Name("repoDidCommit")
+    static let repoFilesDidChange = Notification.Name("repoFilesDidChange")
 }
 
 // MARK: - Commit message editor with consistent text inset

@@ -364,11 +364,7 @@ actor GitService {
             let aheadBehind = await getAheadBehind(at: repoURL, branch: resolvedBranch)
             let changedFiles = status.output
                 .components(separatedBy: .newlines)
-                .filter { line in
-                    guard line.count >= 4 else { return false }
-                    let path = String(line.dropFirst(3))
-                    return !path.hasPrefix(".")
-                }
+                .filter { $0.count >= 4 }
                 .count
 
             return GitRepo(

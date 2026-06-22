@@ -292,6 +292,9 @@ class RepoManagerViewModel {
         operatingRepoIDs.remove(repo.id)
 
         print("[DEBUG] Updated status for \(repo.name): \(updatedRepo.status.displayText)")
+
+        // Notify any open diff window for this repo
+        NotificationCenter.default.post(name: .repoFilesDidChange, object: repoURL)
     }
 
     // Toggle repository selection

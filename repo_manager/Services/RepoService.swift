@@ -213,18 +213,17 @@ struct XcodeProjModifier {
         fileType: String,
         sourceTree: String
     ) -> String {
-        return "\t\t\(uuid) /* \(fileName) */ = {isa = PBXFileReference; lastKnownFileType = \(fileType); name = \(fileName); path = \(filePath); sourceTree = \"\(sourceTree)\"; }; \(XcodeProjModifier.marker)\n"
+        return "\t\t\(uuid) /* \(fileName) */ = {isa = PBXFileReference; lastKnownFileType = \(fileType); name = \(fileName); path = \(filePath); sourceTree = \"\(sourceTree)\"; }; \(XcodeProjModifier.marker)"
     }
 
     private func insertFileReference(in content: String, fileReference: String) -> String {
         guard let range = content.range(of: "/* Begin PBXFileReference section */") else {
             return content
         }
-
-        let insertionPoint = content.index(range.upperBound, offsetBy: 1)
+        // Insert immediately after the section header (no blank line) so removal of the
+        // marked line restores the file to its exact original state.
         var modifiedContent = content
-        modifiedContent.insert(contentsOf: "\n\(fileReference)", at: insertionPoint)
-
+        modifiedContent.insert(contentsOf: "\n\(fileReference)", at: range.upperBound)
         return modifiedContent
     }
 
@@ -270,10 +269,16 @@ struct XcodeProjModifier {
             throw XcodeProjError.childrenArrayNotFound
         }
 
-        let insertionIndex = matchedText.index(childrenEndRange.lowerBound, offsetBy: 0)
+        // Insert before the newline that precedes ); so the ); line is never modified.
+        // This makes removal a simple line-filter with no residual diff.
+        let beforeParen = matchedText[matchedText.startIndex..<childrenEndRange.lowerBound]
+        guard let lastNewlineRange = beforeParen.range(of: "\n", options: .backwards) else {
+            throw XcodeProjError.childrenArrayNotFound
+        }
+
         var modifiedMatch = matchedText
-        let newEntry = "\n\t\t\t\t\t\(fileReferenceUUID) /* \(fileName) */,"
-        modifiedMatch.insert(contentsOf: newEntry, at: insertionIndex)
+        let newEntry = "\n\t\t\t\t\t\(fileReferenceUUID) /* \(fileName) */, \(XcodeProjModifier.marker)"
+        modifiedMatch.insert(contentsOf: newEntry, at: lastNewlineRange.lowerBound)
 
         var modifiedContent = content
         let contentRange = Range(matchRange, in: content)!
@@ -282,40 +287,21 @@ struct XcodeProjModifier {
         return modifiedContent
     }
 
-    // Remove all file references previously added by this tool (identified by marker comment)
+    // Remove all lines added by this tool — both PBXFileReference and mainGroup children
+    // entries carry the marker, so a single filter pass restores the original file exactly.
     @discardableResult
     func removeLocalDependencies() throws -> Int {
-        var content = try String(contentsOf: projectPath, encoding: .utf8)
+        let content = try String(contentsOf: projectPath, encoding: .utf8)
         let marker = XcodeProjModifier.marker
         let lines = content.components(separatedBy: "\n")
 
-        // Collect UUIDs of all marked file reference lines
-        var markedUUIDs: [String] = []
-        for line in lines {
-            guard line.contains(marker), line.contains("PBXFileReference") else { continue }
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if let uuid = trimmed.components(separatedBy: " ").first, uuid.count == 24 {
-                markedUUIDs.append(uuid)
-            }
-        }
+        let markedLines = lines.filter { $0.contains(marker) }
+        guard !markedLines.isEmpty else { return 0 }
 
-        guard !markedUUIDs.isEmpty else { return 0 }
-
-        // Remove marked file reference lines
-        var filtered = lines.filter { !$0.contains(marker) }
-        content = filtered.joined(separator: "\n")
-
-        // Remove corresponding mainGroup children entries for each UUID
-        for uuid in markedUUIDs {
-            filtered = content.components(separatedBy: "\n").filter { line in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                return !(trimmed.hasPrefix("\(uuid) /*") && trimmed.hasSuffix(","))
-            }
-            content = filtered.joined(separator: "\n")
-        }
-
-        try content.write(to: projectPath, atomically: true, encoding: .utf8)
-        return markedUUIDs.count
+        let fileRefCount = markedLines.filter { $0.contains("PBXFileReference") }.count
+        let filtered = lines.filter { !$0.contains(marker) }
+        try filtered.joined(separator: "\n").write(to: projectPath, atomically: true, encoding: .utf8)
+        return fileRefCount
     }
 }
 
