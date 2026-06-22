@@ -26,6 +26,7 @@ struct ContentView: View {
             if let viewModel = tabsManager.currentViewModel {
                 TabContentView(
                     viewModel: viewModel,
+                    updateAvailable: tabsManager.isUpdateAvailable,
                     onDirectorySelected: { url in
                         if let tabID = tabsManager.selectedTabID {
                             tabsManager.updateTabDirectory(tabID, directoryURL: url)
@@ -57,7 +58,12 @@ struct ContentView: View {
                 set: { tabsManager.newVersionAlert = $0 }
             ),
             actions: {
-                Link("Update", destination: URL(string: "https://github.com/chanonly123/swiftpm-local-repo-manager/releases")!)
+                if AppUpdater.canUpdate {
+                    Button("Update & Restart") {
+                        try? AppUpdater.updateAndRestart()
+                    }
+                }
+                Link("View Releases", destination: URL(string: "https://github.com/chanonly123/swiftpm-local-repo-manager/releases")!)
                 Button("Cancel", role: .cancel) { }
             },
             message: {
@@ -91,6 +97,7 @@ struct ContentView: View {
 // Separate view for tab content to isolate ViewModel observations
 struct TabContentView: View {
     @Bindable var viewModel: RepoManagerViewModel
+    var updateAvailable: Bool = false
     let onDirectorySelected: (URL) -> Void
     var validateDirectory: ((URL) -> Bool)? = nil
 
@@ -198,7 +205,7 @@ extension TabContentView {
 
             Spacer()
 
-            if AppUpdater.canUpdate {
+            if updateAvailable && AppUpdater.canUpdate {
                 Button(action: {
                     showingUpdateConfirmation = true
                 }) {

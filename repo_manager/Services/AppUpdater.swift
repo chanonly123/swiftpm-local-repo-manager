@@ -20,23 +20,39 @@ enum AppUpdater {
         }
     }
 
-    /// Derives the source repo root from the running app's bundle location.
+    /// Locates the source repo root.
     ///
-    /// `run.sh` builds to `<repo>/DerivedData/Build/Products/Debug/repo_manager.app`,
-    /// so the repo root is five directories up from the bundle. We verify by
-    /// checking for `run.sh` and `.git`.
+    /// Primary source is `SourceRoot.txt`, which the "Embed Source Root" build
+    /// phase writes into the bundle with `$SRCROOT` at build time — so this
+    /// works whether the app was built from Xcode or run.sh, regardless of where
+    /// DerivedData lives. Falls back to walking up from the bundle (the run.sh
+    /// layout: `<repo>/DerivedData/Build/Products/Debug/repo_manager.app`).
     static func repoRoot() -> URL? {
+        if let baked = bakedSourceRoot(), isRepo(baked) {
+            return baked
+        }
+
         var url = Bundle.main.bundleURL
         for _ in 0..<5 { url.deleteLastPathComponent() }
+        return isRepo(url) ? url : nil
+    }
 
-        let fileManager = FileManager.default
-        let runScript = url.appendingPathComponent("run.sh")
-        let gitDir = url.appendingPathComponent(".git")
-        guard fileManager.fileExists(atPath: runScript.path),
-              fileManager.fileExists(atPath: gitDir.path) else {
+    /// Reads the source path baked in by the "Embed Source Root" build phase.
+    private static func bakedSourceRoot() -> URL? {
+        guard let fileURL = Bundle.main.url(forResource: "SourceRoot", withExtension: "txt"),
+              let contents = try? String(contentsOf: fileURL, encoding: .utf8) else {
             return nil
         }
-        return url
+        let path = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    /// A directory is the source repo if it has both `run.sh` and `.git`.
+    private static func isRepo(_ url: URL) -> Bool {
+        let fileManager = FileManager.default
+        return fileManager.fileExists(atPath: url.appendingPathComponent("run.sh").path)
+            && fileManager.fileExists(atPath: url.appendingPathComponent(".git").path)
     }
 
     /// True when this build can self-update (was built via run.sh).

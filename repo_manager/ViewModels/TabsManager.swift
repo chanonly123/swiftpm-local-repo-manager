@@ -87,6 +87,11 @@ class TabsManager {
     var newVersionDesc: String?
     var newVersionAlert: Bool = false
 
+    /// True once a newer published version has been detected. Unlike
+    /// `newVersionAlert`, this stays set after the alert is dismissed so the
+    /// "Update App" button can remain visible.
+    var isUpdateAvailable: Bool { newVersion != nil }
+
     func getCurrentVersion() -> String? {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
     }
