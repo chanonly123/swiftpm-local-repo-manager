@@ -200,6 +200,15 @@ extension TabContentView {
 
                             Button(action: {
                                 Task {
+                                    await viewModel.removeLocalDependencies(from: project)
+                                }
+                            }) {
+                                Label("Remove Local Dependencies", systemImage: "link.badge.minus")
+                            }
+                            .disabled(viewModel.isPerformingOperation)
+
+                            Button(action: {
+                                Task {
                                     await viewModel.toggleRunScripts(for: project)
                                 }
                             }) {

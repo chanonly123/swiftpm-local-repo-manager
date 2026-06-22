@@ -77,44 +77,55 @@ struct DiffWindowView: View {
         }
     }
 
+    private var hasConflicts: Bool {
+        files.contains { $0.status.contains("U") || ($0.status.first == "A" && $0.status.last == "A") || ($0.status.first == "D" && $0.status.last == "D") }
+    }
+
     private var commitPanel: some View {
         VStack(spacing: 6) {
-            CommitMessageEditor(text: $commitMessage)
-                .frame(height: 60)
-                .background(Color(nsColor: .textBackgroundColor))
-                .cornerRadius(5)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                )
-                .overlay(alignment: .topLeading) {
-                    if commitMessage.isEmpty {
-                        Text("Commit message")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 5)
-                            .allowsHitTesting(false)
-                    }
-                }
-
-            if let error = commitError {
-                Text(error)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.red)
+            if hasConflicts {
+                Label("Resolve merge conflicts before committing", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            } else {
+                CommitMessageEditor(text: $commitMessage)
+                    .frame(height: 60)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .cornerRadius(5)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                    )
+                    .overlay(alignment: .topLeading) {
+                        if commitMessage.isEmpty {
+                            Text("Commit message")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 5)
+                                .allowsHitTesting(false)
+                        }
+                    }
 
-            Button(action: { Task { await performCommit() } }) {
-                HStack(spacing: 4) {
-                    if isCommitting { ProgressView().scaleEffect(0.6).frame(width: 12, height: 12) }
-                    Text("Commit")
-                        .font(.system(size: 12, weight: .medium))
+                if let error = commitError {
+                    Text(error)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity)
+
+                Button(action: { Task { await performCommit() } }) {
+                    HStack(spacing: 4) {
+                        if isCommitting { ProgressView().scaleEffect(0.6).frame(width: 12, height: 12) }
+                        Text("Commit")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCommitting || checkedPaths.isEmpty)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCommitting || checkedPaths.isEmpty)
         }
         .padding(8)
     }
@@ -142,6 +153,13 @@ struct DiffWindowView: View {
                 .font(.system(size: 12))
                 .lineLimit(1)
                 .help(entry.path)
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                Task { await discardFile(entry) }
+            } label: {
+                Label("Discard Changes", systemImage: "arrow.uturn.backward")
+            }
         }
     }
 
@@ -202,12 +220,22 @@ struct DiffWindowView: View {
         }
     }
 
+    private func discardFile(_ entry: FileEntry) async {
+        do {
+            try await git.discardFileChanges(at: repo.url, filePath: entry.path, status: entry.status)
+            if selectedPath == entry.id { selectedPath = nil; diffLines = [] }
+            await loadFiles()
+        } catch {
+            print("[ERROR] DiffWindowView discardFile: \(error)")
+        }
+    }
+
     private func loadFiles() async {
         loadingFiles = true
         defer { loadingFiles = false }
         do {
             let raw = try await git.getChangedFiles(at: repo.url)
-            files = raw.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
+            files = raw.filter { !$0.path.hasPrefix(".") }.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
             checkedPaths = Set(files.map { $0.id })
             if let first = files.first {
                 selectedPath = first.id
@@ -264,7 +292,7 @@ struct DiffWindowView: View {
         case "A": return .green
         case "D": return .red
         case "R": return .blue
-        case "!": return .gray
+        case "!": return .red
         case "+": return .green
         default: return .orange
         }
@@ -326,15 +354,15 @@ private struct DiffTextView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
-        scrollView.hasHorizontalScroller = true
+        scrollView.hasHorizontalScroller = false
         scrollView.hasVerticalScroller = true
         guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
-        textView.isHorizontallyResizable = true
+        textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
-        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                                        height: CGFloat.greatestFiniteMagnitude)
         textView.textContainerInset = NSSize(width: 6, height: 6)

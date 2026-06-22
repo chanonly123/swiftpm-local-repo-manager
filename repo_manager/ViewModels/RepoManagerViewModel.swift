@@ -524,6 +524,22 @@ class RepoManagerViewModel {
         isPerformingOperation = false
     }
 
+    // Remove local dependencies from xcode project
+    @MainActor
+    func removeLocalDependencies(from project: XcodeProject) async {
+        isPerformingOperation = true
+        print("[DEBUG] Removing local dependencies from \(project.name)")
+        do {
+            let count = try await repoService.removeLocalDependencies(project: project)
+            print("[SUCCESS] Removed \(count) local dependency references from \(project.name)")
+            errorMessage = nil
+        } catch {
+            print("[ERROR] Failed to remove local dependencies: \(error.localizedDescription)")
+            errorMessage = "Failed to remove dependencies: \(error.localizedDescription)"
+        }
+        isPerformingOperation = false
+    }
+
     // Toggle run scripts in a project
     @MainActor
     func toggleRunScripts(for project: XcodeProject) async {

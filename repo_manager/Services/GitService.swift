@@ -101,6 +101,17 @@ actor GitService {
         )
     }
 
+    // Discard changes for a single file
+    nonisolated func discardFileChanges(at repoURL: URL, filePath: String, status: String) async throws {
+        if status.hasPrefix("??") {
+            // Untracked — delete via git clean
+            _ = try await runGitCommand(args: ["clean", "-f", "--", filePath], at: repoURL)
+        } else {
+            // Tracked — restore both index and worktree to HEAD
+            _ = try await runGitCommand(args: ["restore", "--staged", "--worktree", "--", filePath], at: repoURL)
+        }
+    }
+
     // Push current branch to origin
     nonisolated func push(at repoURL: URL) async throws -> String {
         try await runGitCommand(args: ["push", "origin", "HEAD"], at: repoURL)
@@ -353,7 +364,11 @@ actor GitService {
             let aheadBehind = await getAheadBehind(at: repoURL, branch: resolvedBranch)
             let changedFiles = status.output
                 .components(separatedBy: .newlines)
-                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .filter { line in
+                    guard line.count >= 4 else { return false }
+                    let path = String(line.dropFirst(3))
+                    return !path.hasPrefix(".")
+                }
                 .count
 
             return GitRepo(

@@ -82,8 +82,9 @@ actor RepoService {
                 do {
                     _ = try modifier.addFileReferenceToMainGroup(
                         fileName: repo.name,
-                        filePath: "../\(repo.name)",
-                        fileType: "wrapper"
+                        filePath: repo.url.path,
+                        fileType: "wrapper",
+                        sourceTree: "<absolute>"
                     )
                     successCount += 1
                 } catch XcodeProjError.fileReferenceAlreadyExists {
@@ -97,6 +98,15 @@ actor RepoService {
         }
 
         return (successCount, totalCount)
+    }
+
+    func removeLocalDependencies(project: XcodeProject) async throws -> Int {
+        let projectPath = project.pbxprojPath
+        guard FileManager.default.fileExists(atPath: projectPath.path) else {
+            throw RepoServiceError.projectNotFound
+        }
+        let modifier = XcodeProjModifier(projectPath: projectPath)
+        return try modifier.removeLocalDependencies()
     }
 
     func toggleRunScripts(project: XcodeProject) async throws -> (enabled: Bool, count: Int) {
@@ -146,7 +156,8 @@ struct XcodeProjModifier {
     func addFileReferenceToMainGroup(
         fileName: String,
         filePath: String,
-        fileType: String
+        fileType: String,
+        sourceTree: String = "SOURCE_ROOT"
     ) throws -> String {
         let content = try String(contentsOf: projectPath, encoding: .utf8)
 
@@ -160,7 +171,8 @@ struct XcodeProjModifier {
             uuid: fileReferenceUUID,
             fileName: fileName,
             filePath: filePath,
-            fileType: fileType
+            fileType: fileType,
+            sourceTree: sourceTree
         )
 
         var modifiedContent = insertFileReference(
@@ -192,15 +204,16 @@ struct XcodeProjModifier {
         return String(uuid.prefix(16) + timestamp).prefix(24).uppercased()
     }
 
+    private static let marker = "/* swiftpm-local-repo-manager */"
+
     private func createPBXFileReferenceEntry(
         uuid: String,
         fileName: String,
         filePath: String,
-        fileType: String
+        fileType: String,
+        sourceTree: String
     ) -> String {
-        return """
-        \t\t\(uuid) /* \(fileName) */ = {isa = PBXFileReference; lastKnownFileType = \(fileType); name = \(fileName); path = \(filePath); sourceTree = "SOURCE_ROOT"; };\n
-        """
+        return "\t\t\(uuid) /* \(fileName) */ = {isa = PBXFileReference; lastKnownFileType = \(fileType); name = \(fileName); path = \(filePath); sourceTree = \"\(sourceTree)\"; }; \(XcodeProjModifier.marker)\n"
     }
 
     private func insertFileReference(in content: String, fileReference: String) -> String {
@@ -267,6 +280,42 @@ struct XcodeProjModifier {
         modifiedContent.replaceSubrange(contentRange, with: modifiedMatch)
 
         return modifiedContent
+    }
+
+    // Remove all file references previously added by this tool (identified by marker comment)
+    @discardableResult
+    func removeLocalDependencies() throws -> Int {
+        var content = try String(contentsOf: projectPath, encoding: .utf8)
+        let marker = XcodeProjModifier.marker
+        let lines = content.components(separatedBy: "\n")
+
+        // Collect UUIDs of all marked file reference lines
+        var markedUUIDs: [String] = []
+        for line in lines {
+            guard line.contains(marker), line.contains("PBXFileReference") else { continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if let uuid = trimmed.components(separatedBy: " ").first, uuid.count == 24 {
+                markedUUIDs.append(uuid)
+            }
+        }
+
+        guard !markedUUIDs.isEmpty else { return 0 }
+
+        // Remove marked file reference lines
+        var filtered = lines.filter { !$0.contains(marker) }
+        content = filtered.joined(separator: "\n")
+
+        // Remove corresponding mainGroup children entries for each UUID
+        for uuid in markedUUIDs {
+            filtered = content.components(separatedBy: "\n").filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return !(trimmed.hasPrefix("\(uuid) /*") && trimmed.hasSuffix(","))
+            }
+            content = filtered.joined(separator: "\n")
+        }
+
+        try content.write(to: projectPath, atomically: true, encoding: .utf8)
+        return markedUUIDs.count
     }
 }
 
