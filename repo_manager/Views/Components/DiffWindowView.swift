@@ -17,6 +17,12 @@ private struct CommitEntry: Identifiable {
     let tags: [String]
 }
 
+private struct StashEntry: Identifiable {
+    let id: String          // ref, e.g. "stash@{0}"
+    let message: String
+    let relativeDate: String
+}
+
 private struct DiffLine: Identifiable {
     let id: Int
     let text: String
@@ -24,6 +30,8 @@ private struct DiffLine: Identifiable {
     var showSeparator = false   // draw a horizontal rule above this line (file boundary)
     enum Kind { case added, removed, hunk, meta, context, fileHeader }
 }
+
+private enum HistoryTab: Hashable { case commits, stashes }
 
 struct DiffWindowView: View {
     let repo: GitRepo
@@ -45,6 +53,11 @@ struct DiffWindowView: View {
     @State private var loadingMoreCommits = false
     @State private var hasMoreCommits = true
 
+    @State private var historyTab: HistoryTab = .commits
+    @State private var stashes: [StashEntry] = []
+    @State private var selectedStash: String?
+    @State private var loadingStashes = true
+
     private let git = GitService()
     private let sizeLimit = 100_000
     private let commitPageSize = 10
@@ -60,22 +73,32 @@ struct DiffWindowView: View {
         .task {
             await loadFiles()
             await loadCommits(reset: true)
+            await loadStashes()
         }
         .onChange(of: selectedPath) { _, path in
             guard let path, let entry = files.first(where: { $0.id == path }) else { return }
             selectedCommit = nil
+            selectedStash = nil
             Task { await loadDiff(entry: entry) }
         }
         .onChange(of: selectedCommit) { _, hash in
             guard let hash else { return }
             selectedPath = nil
+            selectedStash = nil
             Task { await loadCommitDiff(hash: hash) }
+        }
+        .onChange(of: selectedStash) { _, ref in
+            guard let ref else { return }
+            selectedPath = nil
+            selectedCommit = nil
+            Task { await loadStashDiff(ref: ref) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .repoFilesDidChange)) { note in
             guard (note.object as? URL) == repo.url else { return }
             Task {
                 await loadFiles()
                 await refreshCommits()
+                await loadStashes()
                 // Refresh the diff only for a currently-selected file (its contents may have changed).
                 // A selected commit's diff is historical and doesn't change on a working-tree refresh.
                 if let path = selectedPath, let entry = files.first(where: { $0.id == path }) {
@@ -96,20 +119,30 @@ struct DiffWindowView: View {
         }
     }
 
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+    private func sectionHeader(_ title: String, count: Int? = nil) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+            if let count {
+                Text("\(count)")
+                    .monospacedDigit()
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.secondary.opacity(0.15))
+                    .clipShape(Capsule())
+            }
+        }
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     // MARK: - Changed files section
 
     private var fileListSection: some View {
         VStack(spacing: 0) {
-            sectionHeader("CHANGED FILES")
+            sectionHeader("CHANGED FILES", count: files.isEmpty ? nil : files.count)
             Divider()
             if loadingFiles {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -130,42 +163,98 @@ struct DiffWindowView: View {
         }
     }
 
-    // MARK: - History section
+    // MARK: - History section (Commits / Stashes tabs)
 
     private var historySection: some View {
         VStack(spacing: 0) {
-            sectionHeader("HISTORY")
+            Picker("", selection: $historyTab) {
+                Text(commits.isEmpty ? "Commits" : "Commits (\(commits.count)\(hasMoreCommits ? "+" : ""))")
+                    .tag(HistoryTab.commits)
+                Text(stashes.isEmpty ? "Stashes" : "Stashes (\(stashes.count))")
+                    .tag(HistoryTab.stashes)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             Divider()
-            if loadingCommits {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if commits.isEmpty {
-                Text("No commits")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(selection: $selectedCommit) {
-                    ForEach(commits) { commit in
-                        commitRow(commit).tag(commit.id)
-                    }
-                    if hasMoreCommits {
-                        Button(action: { Task { await loadCommits(reset: false) } }) {
-                            HStack(spacing: 6) {
-                                if loadingMoreCommits {
-                                    ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
-                                }
-                                Text("Load more")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(loadingMoreCommits)
-                        .padding(.vertical, 2)
-                    }
-                }
-                .listStyle(.sidebar)
+            switch historyTab {
+            case .commits: commitsList
+            case .stashes: stashesList
             }
         }
+    }
+
+    @ViewBuilder
+    private var commitsList: some View {
+        if loadingCommits {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if commits.isEmpty {
+            Text("No commits")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(selection: $selectedCommit) {
+                ForEach(commits) { commit in
+                    commitRow(commit).tag(commit.id)
+                }
+                if hasMoreCommits {
+                    Button(action: { Task { await loadCommits(reset: false) } }) {
+                        HStack(spacing: 6) {
+                            if loadingMoreCommits {
+                                ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
+                            }
+                            Text("Load more")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(loadingMoreCommits)
+                    .padding(.vertical, 2)
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    @ViewBuilder
+    private var stashesList: some View {
+        if loadingStashes {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if stashes.isEmpty {
+            Text("No stashes")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(selection: $selectedStash) {
+                ForEach(stashes) { stash in
+                    stashRow(stash).tag(stash.id)
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    @ViewBuilder
+    private func stashRow(_ stash: StashEntry) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(stash.message)
+                .font(.system(size: 12))
+                .lineLimit(2)
+            HStack(spacing: 4) {
+                Text(stash.id)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text(stash.relativeDate)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 2)
+        .help(stash.message)
     }
 
     @ViewBuilder
@@ -319,6 +408,10 @@ struct DiffWindowView: View {
            let commit = commits.first(where: { $0.id == hash }) {
             return "\(commit.shortHash)  \(commit.subject)"
         }
+        if let ref = selectedStash,
+           let stash = stashes.first(where: { $0.id == ref }) {
+            return "\(ref)  \(stash.message)"
+        }
         return ""
     }
 
@@ -326,8 +419,8 @@ struct DiffWindowView: View {
     private var diffContent: some View {
         if loadingDiff {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if selectedPath == nil && selectedCommit == nil {
-            Text("Select a file or commit to view changes")
+        } else if selectedPath == nil && selectedCommit == nil && selectedStash == nil {
+            Text("Select a file, commit, or stash to view changes")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if tooLarge {
@@ -468,6 +561,35 @@ struct DiffWindowView: View {
             diffLines = parseDiff(raw)
         } catch {
             print("[ERROR] DiffWindowView loadCommitDiff: \(error)")
+        }
+    }
+
+    private func loadStashes() async {
+        loadingStashes = true
+        defer { loadingStashes = false }
+        do {
+            let raw = try await git.getStashes(at: repo.url)
+            stashes = raw.map { StashEntry(id: $0.ref, message: $0.message, relativeDate: $0.relativeDate) }
+            // Drop a stale stash selection if it no longer exists (e.g. it was popped)
+            if let sel = selectedStash, !stashes.contains(where: { $0.id == sel }) {
+                selectedStash = nil
+            }
+        } catch {
+            print("[ERROR] DiffWindowView loadStashes: \(error)")
+        }
+    }
+
+    private func loadStashDiff(ref: String) async {
+        loadingDiff = true
+        tooLarge = false
+        diffLines = []
+        defer { loadingDiff = false }
+        do {
+            let raw = try await git.getStashDiff(at: repo.url, ref: ref)
+            guard raw.count <= sizeLimit else { tooLarge = true; return }
+            diffLines = parseDiff(raw)
+        } catch {
+            print("[ERROR] DiffWindowView loadStashDiff: \(error)")
         }
     }
 

@@ -25,15 +25,30 @@ struct NewBranchSheet: View {
         branches.contains(trimmedName)
     }
 
-    // Branches matching what the user is typing (excluding the current one), for completion
-    private var suggestions: [String] {
+    private let suggestionLimit = 50
+
+    // All branches matching what the user is typing (excluding the current one), sorted —
+    // matches starting with the query rank first, then alphabetical.
+    private var allMatches: [String] {
         let query = trimmedName.lowercased()
-        return branches.filter { branch in
-            branch != repo.currentBranch &&
-            (query.isEmpty || branch.lowercased().contains(query)) &&
-            branch != trimmedName
-        }
+        return branches
+            .filter { branch in
+                branch != repo.currentBranch &&
+                (query.isEmpty || branch.lowercased().contains(query)) &&
+                branch != trimmedName
+            }
+            .sorted { a, b in
+                let ap = a.lowercased().hasPrefix(query)
+                let bp = b.lowercased().hasPrefix(query)
+                if ap != bp { return ap }
+                return a.localizedStandardCompare(b) == .orderedAscending
+            }
     }
+
+    // Capped list actually rendered, to stay responsive with very many branches
+    private var suggestions: [String] { Array(allMatches.prefix(suggestionLimit)) }
+
+    private var hiddenMatchCount: Int { max(0, allMatches.count - suggestions.count) }
 
     private var actionTitle: String { matchesExistingBranch ? "Switch" : "Create" }
 
@@ -103,28 +118,40 @@ struct NewBranchSheet: View {
     @ViewBuilder
     private var suggestionList: some View {
         if !suggestions.isEmpty {
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(suggestions, id: \.self) { branch in
-                        Button(action: { branchName = branch }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.branch")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                Text(branch)
-                                    .font(.system(size: 12))
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
+            VStack(spacing: 0) {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(suggestions, id: \.self) { branch in
+                            Button(action: { branchName = branch }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.branch")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                    Text(branch)
+                                        .font(.system(size: 12))
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 6)
+                                .contentShape(Rectangle())
                             }
-                            .padding(.vertical, 4)
-                            .padding(.horizontal, 6)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
+                .frame(maxHeight: 140)
+
+                if hiddenMatchCount > 0 {
+                    Divider()
+                    Text("\(hiddenMatchCount) more — keep typing to narrow")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                }
             }
-            .frame(maxHeight: 120)
             .background(Color(nsColor: .textBackgroundColor))
             .overlay(
                 RoundedRectangle(cornerRadius: 5)

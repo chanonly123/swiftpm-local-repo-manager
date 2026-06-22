@@ -1,4 +1,4 @@
-# Git Repo Manager
+# SwiftPM Git Repo Manager
 
 A native macOS app for managing multiple git repositories from a single interface.
 

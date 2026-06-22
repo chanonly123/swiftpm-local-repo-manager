@@ -127,6 +127,30 @@ actor GitService {
         try await runGitCommand(args: ["show", "--no-color", hash], at: repoURL)
     }
 
+    // List stash entries — newest first
+    nonisolated func getStashes(at repoURL: URL) async throws -> [(ref: String, message: String, relativeDate: String)] {
+        let format = "%gd%x1f%s%x1f%cr"
+        let output = try await runGitCommand(
+            args: ["stash", "list", "--pretty=format:\(format)"],
+            at: repoURL,
+            allowNonZeroExit: true
+        )
+        return output.components(separatedBy: .newlines).compactMap { line in
+            let parts = line.components(separatedBy: "\u{1f}")
+            guard parts.count == 3, !parts[0].isEmpty else { return nil }
+            return (parts[0], parts[1], parts[2])
+        }
+    }
+
+    // Full diff for a single stash entry (ref like "stash@{0}")
+    nonisolated func getStashDiff(at repoURL: URL, ref: String) async throws -> String {
+        try await runGitCommand(
+            args: ["stash", "show", "-p", "--no-color", ref],
+            at: repoURL,
+            allowNonZeroExit: true
+        )
+    }
+
     // Stage specific files
     nonisolated func stageFiles(at repoURL: URL, paths: [String]) async throws {
         _ = try await runGitCommand(args: ["add", "--"] + paths, at: repoURL)

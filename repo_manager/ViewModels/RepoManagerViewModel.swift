@@ -95,6 +95,9 @@ class RepoManagerViewModel {
             }
             for await (index, updated) in group {
                 repositories[index] = updated
+                // Keep any open diff window for this repo in sync — FSEvents are paused
+                // while the app is in the background, so live changes are only picked up here.
+                NotificationCenter.default.post(name: .repoFilesDidChange, object: updated.url)
             }
         }
     }
