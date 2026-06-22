@@ -151,6 +151,28 @@ actor GitService {
         )
     }
 
+    // Move the current branch to a commit. hard=true discards changes, false keeps them staged (soft).
+    nonisolated func resetToCommit(at repoURL: URL, hash: String, hard: Bool) async throws -> String {
+        let mode = hard ? "--hard" : "--soft"
+        _ = try await runGitCommand(args: ["reset", mode, hash], at: repoURL)
+        return "✓ Moved branch to \(hash) (\(hard ? "hard" : "soft"))"
+    }
+
+    // Apply a stash without removing it
+    nonisolated func applyStash(at repoURL: URL, ref: String) async throws -> String {
+        try await runGitCommand(args: ["stash", "apply", ref], at: repoURL)
+    }
+
+    // Apply a stash and remove it from the stash list
+    nonisolated func popStash(at repoURL: URL, ref: String) async throws -> String {
+        try await runGitCommand(args: ["stash", "pop", ref], at: repoURL)
+    }
+
+    // Delete a stash without applying it
+    nonisolated func dropStash(at repoURL: URL, ref: String) async throws -> String {
+        try await runGitCommand(args: ["stash", "drop", ref], at: repoURL)
+    }
+
     // Stage specific files
     nonisolated func stageFiles(at repoURL: URL, paths: [String]) async throws {
         _ = try await runGitCommand(args: ["add", "--"] + paths, at: repoURL)

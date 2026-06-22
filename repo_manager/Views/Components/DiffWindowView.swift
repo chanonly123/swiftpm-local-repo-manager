@@ -57,6 +57,7 @@ struct DiffWindowView: View {
     @State private var stashes: [StashEntry] = []
     @State private var selectedStash: String?
     @State private var loadingStashes = true
+    @State private var resetTargetCommit: CommitEntry?
 
     private let git = GitService()
     private let sizeLimit = 100_000
@@ -65,7 +66,7 @@ struct DiffWindowView: View {
     var body: some View {
         HSplitView {
             sidebarPanel
-                .frame(minWidth: 200, idealWidth: 240, maxWidth: 340)
+                .frame(minWidth: 200, idealWidth: 240, maxWidth: 500)
             diffPanel
                 .frame(minWidth: 400, maxWidth: .infinity)
         }
@@ -104,6 +105,11 @@ struct DiffWindowView: View {
                 if let path = selectedPath, let entry = files.first(where: { $0.id == path }) {
                     await loadDiff(entry: entry)
                 }
+            }
+        }
+        .sheet(item: $resetTargetCommit) { commit in
+            MoveBranchSheet(commit: commit, currentBranch: repo.currentBranch) { hard in
+                Task { await resetToCommit(commit, hard: hard) }
             }
         }
     }
@@ -168,7 +174,7 @@ struct DiffWindowView: View {
     private var historySection: some View {
         VStack(spacing: 0) {
             Picker("", selection: $historyTab) {
-                Text(commits.isEmpty ? "Commits" : "Commits (\(commits.count)\(hasMoreCommits ? "+" : ""))")
+                Text("Commits")
                     .tag(HistoryTab.commits)
                 Text(stashes.isEmpty ? "Stashes" : "Stashes (\(stashes.count))")
                     .tag(HistoryTab.stashes)
@@ -255,6 +261,24 @@ struct DiffWindowView: View {
         }
         .padding(.vertical, 2)
         .help(stash.message)
+        .contextMenu {
+            Button {
+                Task { await applyStash(stash, removeAfter: false) }
+            } label: {
+                Label("Apply Stash", systemImage: "tray.and.arrow.up")
+            }
+            Button {
+                Task { await applyStash(stash, removeAfter: true) }
+            } label: {
+                Label("Apply and Remove", systemImage: "tray.and.arrow.up.fill")
+            }
+            Divider()
+            Button(role: .destructive) {
+                Task { await dropStash(stash) }
+            } label: {
+                Label("Delete Stash", systemImage: "trash")
+            }
+        }
     }
 
     @ViewBuilder
@@ -297,6 +321,13 @@ struct DiffWindowView: View {
         }
         .padding(.vertical, 2)
         .help("\(commit.shortHash) — \(commit.subject)")
+        .contextMenu {
+            Button {
+                resetTargetCommit = commit
+            } label: {
+                Label("Move current branch to this commit…", systemImage: "arrow.uturn.backward.circle")
+            }
+        }
     }
 
     private var hasConflicts: Bool {
@@ -593,6 +624,45 @@ struct DiffWindowView: View {
         }
     }
 
+    // MARK: - Commit / stash actions
+
+    private func resetToCommit(_ commit: CommitEntry, hard: Bool) async {
+        do {
+            _ = try await git.resetToCommit(at: repo.url, hash: commit.id, hard: hard)
+            // Refreshes the repo list (branch position + status) and, in turn, this window
+            NotificationCenter.default.post(name: .repoDidCommit, object: repo.url)
+            await loadFiles()
+            await refreshCommits()
+        } catch {
+            print("[ERROR] DiffWindowView resetToCommit: \(error)")
+        }
+    }
+
+    private func applyStash(_ stash: StashEntry, removeAfter: Bool) async {
+        do {
+            if removeAfter {
+                _ = try await git.popStash(at: repo.url, ref: stash.id)
+            } else {
+                _ = try await git.applyStash(at: repo.url, ref: stash.id)
+            }
+            NotificationCenter.default.post(name: .repoDidCommit, object: repo.url)
+            await loadFiles()
+            await loadStashes()
+        } catch {
+            print("[ERROR] DiffWindowView applyStash: \(error)")
+        }
+    }
+
+    private func dropStash(_ stash: StashEntry) async {
+        do {
+            _ = try await git.dropStash(at: repo.url, ref: stash.id)
+            if selectedStash == stash.id { selectedStash = nil; diffLines = [] }
+            await loadStashes()
+        } catch {
+            print("[ERROR] DiffWindowView dropStash: \(error)")
+        }
+    }
+
     private func parseDiff(_ text: String) -> [DiffLine] {
         var result: [DiffLine] = []
         var fileCount = 0
@@ -650,6 +720,64 @@ struct DiffWindowView: View {
 extension Notification.Name {
     static let repoDidCommit = Notification.Name("repoDidCommit")
     static let repoFilesDidChange = Notification.Name("repoFilesDidChange")
+}
+
+// MARK: - Move-branch-to-commit (reset) sheet
+
+private struct MoveBranchSheet: View {
+    let commit: CommitEntry
+    let currentBranch: String?
+    let onConfirm: (Bool) -> Void   // hard
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var mode: ResetMode = .soft
+
+    private enum ResetMode { case soft, hard }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Move Branch to Commit")
+                    .font(.headline)
+                Text("\(currentBranch ?? "current branch")  →  \(commit.shortHash)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(commit.subject)
+                .font(.system(size: 12))
+                .lineLimit(2)
+                .foregroundStyle(.secondary)
+
+            Picker("", selection: $mode) {
+                Text("Soft — keep changes staged").tag(ResetMode.soft)
+                Text("Hard — discard all changes").tag(ResetMode.hard)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+
+            if mode == .hard {
+                Label("Permanently discards uncommitted changes and any commits after this one.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(mode == .hard ? "Hard Reset" : "Soft Reset") {
+                    onConfirm(mode == .hard)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
 }
 
 // MARK: - Commit message editor with consistent text inset

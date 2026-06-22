@@ -109,7 +109,7 @@ struct NewBranchSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 400)
+        .frame(width: 600)
         .task {
             branches = (try? await git.getBranches(at: repo.url)) ?? []
         }
