@@ -78,9 +78,9 @@ actor GitService {
     }
 
     // Commit history (paged) — newest first
-    nonisolated func getCommitHistory(at repoURL: URL, skip: Int, limit: Int) async throws -> [(hash: String, shortHash: String, subject: String, author: String, relativeDate: String)] {
-        // Unit-separator (\x1f) between fields keeps subjects with spaces intact
-        let format = "%H%x1f%h%x1f%s%x1f%an%x1f%ar"
+    nonisolated func getCommitHistory(at repoURL: URL, skip: Int, limit: Int) async throws -> [(hash: String, shortHash: String, subject: String, author: String, relativeDate: String, tags: [String])] {
+        // Unit-separator (\x1f) between fields keeps subjects with spaces intact; %D lists ref names
+        let format = "%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%D"
         let output = try await runGitCommand(
             args: ["log", "--skip=\(skip)", "-n", "\(limit)", "--pretty=format:\(format)"],
             at: repoURL,
@@ -88,9 +88,38 @@ actor GitService {
         )
         return output.components(separatedBy: .newlines).compactMap { line in
             let parts = line.components(separatedBy: "\u{1f}")
-            guard parts.count == 5 else { return nil }
-            return (parts[0], parts[1], parts[2], parts[3], parts[4])
+            guard parts.count == 6 else { return nil }
+            // %D looks like "HEAD -> main, tag: v1.0, tag: v2.0, origin/main" — keep only tags
+            let tags = parts[5]
+                .components(separatedBy: ", ")
+                .filter { $0.hasPrefix("tag: ") }
+                .map { String($0.dropFirst("tag: ".count)) }
+            return (parts[0], parts[1], parts[2], parts[3], parts[4], tags)
         }
+    }
+
+    // List local branch names
+    nonisolated func getBranches(at repoURL: URL) async throws -> [String] {
+        let output = try await runGitCommand(args: ["branch", "--format=%(refname:short)"], at: repoURL)
+        return output.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    // Switch to an existing branch. Stashes uncommitted changes first when stashChanges is true.
+    nonisolated func switchBranch(at repoURL: URL, name: String, stashChanges: Bool) async throws -> String {
+        var messages: [String] = []
+        if stashChanges {
+            let status = try await getStatus(at: repoURL)
+            if status.hasChanges {
+                messages.append("Stashing uncommitted changes...")
+                _ = try await runGitCommand(args: ["stash", "push", "--include-untracked"], at: repoURL)
+            }
+        }
+        messages.append("Switching to \(name)...")
+        _ = try await runGitCommand(args: ["checkout", name], at: repoURL)
+        messages.append("✓ Switched to \(name)")
+        return messages.joined(separator: "\n")
     }
 
     // Full diff for a single commit

@@ -250,6 +250,9 @@ extension TabContentView {
                         },
                         onCreateBranch: { targetRepo, name, stashChanges in
                             Task { await viewModel.createBranch(for: targetRepo, name: name, stashChanges: stashChanges) }
+                        },
+                        onSwitchBranch: { targetRepo, name, stashChanges in
+                            Task { await viewModel.switchBranch(for: targetRepo, name: name, stashChanges: stashChanges) }
                         }
                     )
                 }

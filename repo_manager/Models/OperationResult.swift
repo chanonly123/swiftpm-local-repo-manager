@@ -18,5 +18,6 @@ struct OperationResult: Identifiable {
         case status = "Status"
         case refresh = "Refresh"
         case createBranch = "Create Branch"
+        case switchBranch = "Switch Branch"
     }
 }

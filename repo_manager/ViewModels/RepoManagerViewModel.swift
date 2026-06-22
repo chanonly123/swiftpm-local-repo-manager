@@ -386,6 +386,15 @@ class RepoManagerViewModel {
         await refreshAllRepositoryStatuses()
     }
 
+    // Switch a single repository to an existing branch
+    @MainActor
+    func switchBranch(for repo: GitRepo, name: String, stashChanges: Bool) async {
+        await performOperation(on: [repo], operation: .switchBranch) { repo in
+            try await self.gitService.switchBranch(at: repo.url, name: name, stashChanges: stashChanges)
+        }
+        await refreshAllRepositoryStatuses()
+    }
+
     // Hard reset selected repositories
     @MainActor
     func hardResetSelected() async {

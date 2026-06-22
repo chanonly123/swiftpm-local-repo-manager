@@ -11,6 +11,7 @@ struct RepoRowView: View {
     var onRemoveDependencies: (XcodeProject) -> Void = { _ in }
     var onToggleRunScripts: (XcodeProject) -> Void = { _ in }
     var onCreateBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
+    var onSwitchBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
 
     @State private var showNewBranchSheet = false
 
@@ -123,20 +124,14 @@ struct RepoRowView: View {
             .buttonStyle(.plain)
             .help("Open in Terminal")
 
-            // Git operations menu
-            Menu {
-                Button(action: { showNewBranchSheet = true }) {
-                    Label("Create New Branch…", systemImage: "arrow.branch")
-                }
-            } label: {
+            // Branch switch / create button
+            Button(action: { showNewBranchSheet = true }) {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Git Operations")
+            .buttonStyle(.plain)
+            .help("Switch or Create Branch")
             .disabled(repo.status == .loading || isPerformingOperation)
 
             // Diff / History button
@@ -172,9 +167,11 @@ struct RepoRowView: View {
         .cornerRadius(4)
         .opacity(isOperating ? 0.8 : 1.0)
         .sheet(isPresented: $showNewBranchSheet) {
-            NewBranchSheet(repo: repo) { name, stashChanges in
-                onCreateBranch(repo, name, stashChanges)
-            }
+            NewBranchSheet(
+                repo: repo,
+                onSwitch: { name, stashChanges in onSwitchBranch(repo, name, stashChanges) },
+                onCreate: { name, stashChanges in onCreateBranch(repo, name, stashChanges) }
+            )
         }
     }
 

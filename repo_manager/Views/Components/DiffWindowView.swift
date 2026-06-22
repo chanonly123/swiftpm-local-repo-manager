@@ -14,6 +14,7 @@ private struct CommitEntry: Identifiable {
     let subject: String
     let author: String
     let relativeDate: String
+    let tags: [String]
 }
 
 private struct DiffLine: Identifiable {
@@ -173,6 +174,21 @@ struct DiffWindowView: View {
             Text(commit.subject)
                 .font(.system(size: 12))
                 .lineLimit(1)
+            if !commit.tags.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(commit.tags, id: \.self) { tag in
+                        Label(tag, systemImage: "tag.fill")
+                            .labelStyle(.titleAndIcon)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.blue)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.blue.opacity(0.12))
+                            .clipShape(Capsule())
+                            .help("Tag: \(tag)")
+                    }
+                }
+            }
             HStack(spacing: 4) {
                 Text(commit.shortHash)
                     .font(.system(size: 10, design: .monospaced))
@@ -402,7 +418,7 @@ struct DiffWindowView: View {
             defer { loadingCommits = false }
             do {
                 let raw = try await git.getCommitHistory(at: repo.url, skip: 0, limit: commitPageSize)
-                commits = raw.map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate) }
+                commits = raw.map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate, tags: $0.tags) }
                 hasMoreCommits = raw.count == commitPageSize
             } catch {
                 print("[ERROR] DiffWindowView loadCommits: \(error)")
@@ -416,7 +432,7 @@ struct DiffWindowView: View {
                 let existing = Set(commits.map { $0.id })
                 let newEntries = raw
                     .filter { !existing.contains($0.hash) }
-                    .map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate) }
+                    .map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate, tags: $0.tags) }
                 commits.append(contentsOf: newEntries)
                 hasMoreCommits = raw.count == commitPageSize
             } catch {
@@ -430,7 +446,7 @@ struct DiffWindowView: View {
         let count = max(commitPageSize, commits.count)
         do {
             let raw = try await git.getCommitHistory(at: repo.url, skip: 0, limit: count)
-            commits = raw.map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate) }
+            commits = raw.map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate, tags: $0.tags) }
             hasMoreCommits = raw.count == count
             // Only drop the selection if the selected commit no longer exists (e.g. history rewritten)
             if let sel = selectedCommit, !commits.contains(where: { $0.id == sel }) {
