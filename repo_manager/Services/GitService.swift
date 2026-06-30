@@ -99,11 +99,38 @@ actor GitService {
     }
 
     // List local branch names
+    // Local branches plus remote-only branches, by short name (deduped, locals first).
+    // Remote refs (e.g. "origin/feature") are reduced to their branch name so checking
+    // them out creates a local tracking branch instead of detaching HEAD.
     nonisolated func getBranches(at repoURL: URL) async throws -> [String] {
-        let output = try await runGitCommand(args: ["branch", "--format=%(refname:short)"], at: repoURL)
-        return output.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        let output = try await runGitCommand(
+            args: ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"],
+            at: repoURL
+        )
+        var seen = Set<String>()
+        var locals: [String] = []
+        var remoteOnly: [String] = []
+        for line in output.components(separatedBy: .newlines) {
+            let ref = line.trimmingCharacters(in: .whitespaces)
+            guard !ref.isEmpty else { continue }
+            if ref.hasPrefix("refs/heads/") {
+                let name = String(ref.dropFirst("refs/heads/".count))
+                if seen.insert(name).inserted { locals.append(name) }
+            } else if ref.hasPrefix("refs/remotes/") {
+                // Drop "refs/remotes/<remote>/" to get the branch short name
+                let rest = String(ref.dropFirst("refs/remotes/".count))
+                guard let slash = rest.firstIndex(of: "/") else { continue }
+                let name = String(rest[rest.index(after: slash)...])
+                // Skip the remote HEAD symref (e.g. refs/remotes/origin/HEAD)
+                if name == "HEAD" { continue }
+                remoteOnly.append(name)
+            }
+        }
+        // Append remote-only branches that don't already exist locally
+        for name in remoteOnly where seen.insert(name).inserted {
+            locals.append(name)
+        }
+        return locals
     }
 
     // Switch to an existing branch. Stashes uncommitted changes first when stashChanges is true.
@@ -340,14 +367,25 @@ actor GitService {
 
     // Get ahead/behind counts relative to upstream
     nonisolated func getAheadBehind(at repoURL: URL, branch: String) async -> (ahead: Int, behind: Int)? {
-        // Verify the remote tracking ref exists before running rev-list — avoids a noisy
-        // "ambiguous argument" error on repos that have never been fetched.
-        let remoteRef = "origin/\(branch)"
-        guard let _ = try? await runGitCommand(
-            args: ["rev-parse", "--verify", remoteRef],
-            at: repoURL,
-            logErrors: false
-        ) else { return nil }
+        // Pick a remote ref to compare against. Prefer this branch's own remote
+        // tracking branch, then its configured upstream, then the remote's default
+        // branch (origin/HEAD). The fallbacks let a freshly created local branch —
+        // which has no origin/<branch> ref yet — still show how far ahead/behind it
+        // is of the base it was forked from.
+        // Verifying the ref first also avoids a noisy "ambiguous argument" error
+        // on repos that have never been fetched.
+        var remoteRef: String?
+        for candidate in ["origin/\(branch)", "@{upstream}", "origin/HEAD"] {
+            if (try? await runGitCommand(
+                args: ["rev-parse", "--verify", "--quiet", candidate],
+                at: repoURL,
+                logErrors: false
+            )) != nil {
+                remoteRef = candidate
+                break
+            }
+        }
+        guard let remoteRef else { return nil }
 
         guard let output = try? await runGitCommand(
             args: ["rev-list", "--left-right", "--count", "HEAD...\(remoteRef)"],

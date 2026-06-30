@@ -60,7 +60,7 @@ struct DiffWindowView: View {
     @State private var resetTargetCommit: CommitEntry?
 
     private let git = GitService()
-    private let sizeLimit = 100_000
+    private let sizeLimit = 1_000_000
     private let commitPageSize = 10
 
     var body: some View {
@@ -103,7 +103,7 @@ struct DiffWindowView: View {
                 // Refresh the diff only for a currently-selected file (its contents may have changed).
                 // A selected commit's diff is historical and doesn't change on a working-tree refresh.
                 if let path = selectedPath, let entry = files.first(where: { $0.id == path }) {
-                    await loadDiff(entry: entry)
+                    await loadDiff(entry: entry, showLoader: false)
                 }
             }
         }
@@ -520,16 +520,21 @@ struct DiffWindowView: View {
         }
     }
 
-    private func loadDiff(entry: FileEntry) async {
-        loadingDiff = true
-        tooLarge = false
-        diffLines = []
+    private func loadDiff(entry: FileEntry, showLoader: Bool = true) async {
+        // On a background refresh (showLoader == false) keep the current diff on
+        // screen instead of blanking to a spinner; just swap in the new content.
+        if showLoader {
+            loadingDiff = true
+            tooLarge = false
+            diffLines = []
+        }
         defer { loadingDiff = false }
         do {
             let raw = try await entry.status.hasPrefix("??")
                 ? git.getDiffUntracked(at: repo.url, filePath: entry.path)
                 : git.getDiff(at: repo.url, filePath: entry.path)
-            guard raw.count <= sizeLimit else { tooLarge = true; return }
+            guard raw.utf8.count <= sizeLimit else { tooLarge = true; diffLines = []; return }
+            tooLarge = false
             diffLines = parseDiff(raw)
         } catch {
             print("[ERROR] DiffWindowView loadDiff: \(error)")
@@ -588,7 +593,7 @@ struct DiffWindowView: View {
         defer { loadingDiff = false }
         do {
             let raw = try await git.getCommitDiff(at: repo.url, hash: hash)
-            guard raw.count <= sizeLimit else { tooLarge = true; return }
+            guard raw.utf8.count <= sizeLimit else { tooLarge = true; return }
             diffLines = parseDiff(raw)
         } catch {
             print("[ERROR] DiffWindowView loadCommitDiff: \(error)")
@@ -617,7 +622,7 @@ struct DiffWindowView: View {
         defer { loadingDiff = false }
         do {
             let raw = try await git.getStashDiff(at: repo.url, ref: ref)
-            guard raw.count <= sizeLimit else { tooLarge = true; return }
+            guard raw.utf8.count <= sizeLimit else { tooLarge = true; return }
             diffLines = parseDiff(raw)
         } catch {
             print("[ERROR] DiffWindowView loadStashDiff: \(error)")
