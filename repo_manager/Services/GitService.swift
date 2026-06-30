@@ -420,40 +420,33 @@ actor GitService {
         do {
             try process.run()
 
-            // Use async version with 30-second timeout to avoid blocking the thread
-            let didComplete = await withTaskGroup(of: Bool.self) { group in
-                // Wait for process completion
+            // Drain stdout/stderr *while* the process runs. Reading only after the
+            // process exits deadlocks when output exceeds the OS pipe buffer (~64KB):
+            // the child blocks writing to the full pipe and never exits. A newly
+            // added file's full-content diff easily crosses that threshold. A 30s
+            // timeout (which terminates the process to unblock the reads) guards
+            // against a genuinely hung git.
+            let pipes: (Data, Data)? = await withTaskGroup(of: (Data, Data)?.self) { group in
                 group.addTask {
-                    await withCheckedContinuation { continuation in
-                        process.terminationHandler = { _ in
-                            continuation.resume()
-                        }
-                    }
-                    return true
+                    let out = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
+                    let err = (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
+                    return (out, err)
                 }
-
-                // Timeout task (30 seconds)
                 group.addTask {
                     try? await Task.sleep(for: .seconds(30))
-                    return false
+                    if process.isRunning { process.terminate() }
+                    return nil
                 }
-
-                // Return result of first completed task
-                let result = await group.next() ?? false
+                let result = await group.next() ?? nil
                 group.cancelAll()
                 return result
             }
 
-            // Check if timeout occurred
-            if !didComplete {
-                if process.isRunning {
-                    process.terminate()
-                }
+            guard let (outputData, errorData) = pipes else {
                 throw GitServiceError.commandFailed("Git command timed out after 30 seconds")
             }
 
-            let outputData = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
-            let errorData = try errorPipe.fileHandleForReading.readToEnd() ?? Data()
+            process.waitUntilExit()
 
             let output = String(data: outputData, encoding: .utf8) ?? ""
             let errorOutput = String(data: errorData, encoding: .utf8) ?? ""

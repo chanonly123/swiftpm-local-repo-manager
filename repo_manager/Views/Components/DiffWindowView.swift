@@ -1,38 +1,6 @@
 import SwiftUI
 import AppKit
 
-private struct FileEntry: Identifiable {
-    let id: String
-    let status: String
-    let path: String
-    var fileName: String { URL(fileURLWithPath: path).lastPathComponent }
-}
-
-private struct CommitEntry: Identifiable {
-    let id: String          // full hash
-    let shortHash: String
-    let subject: String
-    let author: String
-    let relativeDate: String
-    let tags: [String]
-}
-
-private struct StashEntry: Identifiable {
-    let id: String          // ref, e.g. "stash@{0}"
-    let message: String
-    let relativeDate: String
-}
-
-private struct DiffLine: Identifiable {
-    let id: Int
-    let text: String
-    let kind: Kind
-    var showSeparator = false   // draw a horizontal rule above this line (file boundary)
-    enum Kind { case added, removed, hunk, meta, context, fileHeader }
-}
-
-private enum HistoryTab: Hashable { case commits, stashes }
-
 struct DiffWindowView: View {
     let repo: GitRepo
 
@@ -488,11 +456,32 @@ struct DiffWindowView: View {
                 .help(entry.path)
         }
         .contextMenu {
+            Button {
+                openInVSCode(entry)
+            } label: {
+                Label("Open in VSCode", systemImage: "chevron.left.forwardslash.chevron.right")
+            }
+            Button {
+                NSWorkspace.shared.open(repo.url.appendingPathComponent(entry.path))
+            } label: {
+                Label("Open in Default App", systemImage: "arrow.up.forward.app")
+            }
+            Divider()
             Button(role: .destructive) {
                 Task { await discardFile(entry) }
             } label: {
                 Label("Discard Changes", systemImage: "arrow.uturn.backward")
             }
+        }
+    }
+
+    private func openInVSCode(_ entry: FileEntry) {
+        let url = repo.url.appendingPathComponent(entry.path)
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") {
+            NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            // VSCode not installed — fall back to the default app
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -776,10 +765,13 @@ struct DiffWindowView: View {
                 result.append(DiffLine(id: i, text: filePath(fromDiffGit: line), kind: .fileHeader, showSeparator: fileCount > 1))
                 continue
             }
-            if line.hasPrefix("index ") { continue }
+            // Drop low-signal header lines — the bold file header already shows the path
+            if line.hasPrefix("index ") || line.hasPrefix("--- ") || line.hasPrefix("+++ ")
+                || line.hasPrefix("new file mode") || line.hasPrefix("deleted file mode")
+                || line.hasPrefix("similarity index") || line.hasPrefix("rename from")
+                || line.hasPrefix("rename to") { continue }
             let kind: DiffLine.Kind
-            if line.hasPrefix("+++") || line.hasPrefix("---") { kind = .meta }
-            else if line.hasPrefix("+") { kind = .added }
+            if line.hasPrefix("+") { kind = .added }
             else if line.hasPrefix("-") { kind = .removed }
             else if line.hasPrefix("@@") { kind = .hunk }
             else { kind = .context }
@@ -816,255 +808,6 @@ struct DiffWindowView: View {
         case "!": return .red
         case "+": return .green
         default: return .orange
-        }
-    }
-}
-
-extension Notification.Name {
-    static let repoDidCommit = Notification.Name("repoDidCommit")
-    static let repoFilesDidChange = Notification.Name("repoFilesDidChange")
-}
-
-// MARK: - Move-branch-to-commit (reset) sheet
-
-private struct MoveBranchSheet: View {
-    let commit: CommitEntry
-    let currentBranch: String?
-    let onConfirm: (Bool) -> Void   // hard
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var mode: ResetMode = .soft
-
-    private enum ResetMode { case soft, hard }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Move Branch to Commit")
-                    .font(.headline)
-                Text("\(currentBranch ?? "current branch")  →  \(commit.shortHash)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Text(commit.subject)
-                .font(.system(size: 12))
-                .lineLimit(2)
-                .foregroundStyle(.secondary)
-
-            Picker("", selection: $mode) {
-                Text("Soft — keep changes staged").tag(ResetMode.soft)
-                Text("Hard — discard all changes").tag(ResetMode.hard)
-            }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
-
-            if mode == .hard {
-                Label("Permanently discards uncommitted changes and any commits after this one.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button(mode == .hard ? "Hard Reset" : "Soft Reset") {
-                    onConfirm(mode == .hard)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(20)
-        .frame(width: 420)
-    }
-}
-
-// MARK: - Squash commits sheet
-
-private struct SquashSheet: View {
-    let count: Int
-    let defaultMessage: String
-    let onConfirm: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var message: String = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Squash \(count) Commits")
-                    .font(.headline)
-                Text("Combine the top \(count) commits into a single commit.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Text("Commit message")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            CommitMessageEditor(text: $message)
-                .frame(height: 140)
-                .background(Color(nsColor: .textBackgroundColor))
-                .cornerRadius(5)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                )
-
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Squash") {
-                    onConfirm(message)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 460)
-        .onAppear { message = defaultMessage }
-    }
-}
-
-// MARK: - Commit message editor with consistent text inset
-
-private struct CommitMessageEditor: NSViewRepresentable {
-    @Binding var text: String
-
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        guard let tv = scrollView.documentView as? NSTextView else { return scrollView }
-        tv.font = NSFont.systemFont(ofSize: 12)
-        tv.textContainerInset = NSSize(width: 4, height: 5)
-        tv.textContainer?.lineFragmentPadding = 1
-        tv.isRichText = false
-        tv.isAutomaticQuoteSubstitutionEnabled = false
-        tv.drawsBackground = false
-        tv.delegate = context.coordinator
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = false
-        return scrollView
-    }
-
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let tv = scrollView.documentView as? NSTextView else { return }
-        // Never touch the text storage while the user is actively typing — causes out-of-bounds crash
-        guard !context.coordinator.isEditing else { return }
-        if tv.string != text { tv.string = text }
-    }
-
-    class Coordinator: NSObject, NSTextViewDelegate {
-        @Binding var text: String
-        var isEditing = false
-        init(text: Binding<String>) { _text = text }
-
-        func textDidBeginEditing(_ notification: Notification) { isEditing = true }
-        func textDidEndEditing(_ notification: Notification) { isEditing = false }
-
-        func textDidChange(_ notification: Notification) {
-            guard let tv = notification.object as? NSTextView else { return }
-            text = tv.string
-        }
-    }
-}
-
-// MARK: - NSTextView wrapper for multi-line selection
-
-private extension NSAttributedString.Key {
-    static let fileSeparator = NSAttributedString.Key("diffFileSeparator")
-}
-
-// NSTextView that draws a full-width horizontal rule above any line carrying .fileSeparator
-private final class DiffNSTextView: NSTextView {
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard let lm = layoutManager, let tc = textContainer, let ts = textStorage else { return }
-        let inset = textContainerInset
-        ts.enumerateAttribute(.fileSeparator, in: NSRange(location: 0, length: ts.length)) { value, range, _ in
-            guard value != nil else { return }
-            let glyphRange = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            let rect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
-            let height: CGFloat = 4
-            let y = (rect.minY + inset.height - 12).rounded()
-            NSColor.tertiaryLabelColor.setFill()
-            NSRect(x: 0, y: y, width: bounds.width, height: height).fill()
-        }
-    }
-}
-
-private struct DiffTextView: NSViewRepresentable {
-    let lines: [DiffLine]
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.hasHorizontalScroller = false
-        scrollView.hasVerticalScroller = true
-        scrollView.drawsBackground = false
-
-        let contentSize = scrollView.contentSize
-        let textView = DiffNSTextView(frame: NSRect(origin: .zero, size: contentSize))
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.drawsBackground = false
-        textView.isHorizontallyResizable = false
-        textView.isVerticallyResizable = true
-        textView.autoresizingMask = [.width]
-        textView.textContainerInset = NSSize(width: 6, height: 6)
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(width: contentSize.width,
-                                                       height: CGFloat.greatestFiniteMagnitude)
-        scrollView.documentView = textView
-        return scrollView
-    }
-
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView else { return }
-        let attrString = NSMutableAttributedString()
-        for line in lines {
-            if line.kind == .fileHeader {
-                let para = NSMutableParagraphStyle()
-                para.paragraphSpacingBefore = line.showSeparator ? 100 : 2
-                para.paragraphSpacing = 4
-                var attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedSystemFont(ofSize: 20, weight: .bold),
-                    .foregroundColor: NSColor.labelColor,
-                    .paragraphStyle: para
-                ]
-                if line.showSeparator { attrs[.fileSeparator] = true }
-                attrString.append(NSAttributedString(string: line.text + "\n", attributes: attrs))
-                continue
-            }
-            let (fg, bg) = nsColors(line.kind)
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: fg,
-                .backgroundColor: bg
-            ]
-            attrString.append(NSAttributedString(string: line.text + "\n", attributes: attrs))
-        }
-        textView.textStorage?.setAttributedString(attrString)
-        textView.needsDisplay = true
-    }
-
-    private func nsColors(_ kind: DiffLine.Kind) -> (NSColor, NSColor) {
-        switch kind {
-        case .added:      return (.labelColor, NSColor.systemGreen.withAlphaComponent(0.15))
-        case .removed:    return (.labelColor, NSColor.systemRed.withAlphaComponent(0.15))
-        case .hunk:       return (.systemBlue, NSColor.systemBlue.withAlphaComponent(0.06))
-        case .meta:       return (.secondaryLabelColor, .clear)
-        case .context:    return (.labelColor, .clear)
-        case .fileHeader: return (.labelColor, .clear)
         }
     }
 }
