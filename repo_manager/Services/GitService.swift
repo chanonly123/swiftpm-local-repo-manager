@@ -185,6 +185,15 @@ actor GitService {
         return "✓ Moved branch to \(hash) (\(hard ? "hard" : "soft"))"
     }
 
+    // Squash the most recent `count` commits into a single commit with the given
+    // message. Uses a soft reset to the commit below the range, then re-commits the
+    // combined staged changes.
+    nonisolated func squashCommits(at repoURL: URL, count: Int, message: String) async throws -> String {
+        _ = try await runGitCommand(args: ["reset", "--soft", "HEAD~\(count)"], at: repoURL)
+        _ = try await runGitCommand(args: ["commit", "-m", message], at: repoURL)
+        return "✓ Squashed \(count) commits"
+    }
+
     // Apply a stash without removing it
     nonisolated func applyStash(at repoURL: URL, ref: String) async throws -> String {
         try await runGitCommand(args: ["stash", "apply", ref], at: repoURL)

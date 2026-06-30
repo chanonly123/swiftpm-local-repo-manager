@@ -48,7 +48,8 @@ struct DiffWindowView: View {
     @State private var commitError: String?
 
     @State private var commits: [CommitEntry] = []
-    @State private var selectedCommit: String?
+    @State private var selectedCommits: Set<String> = []
+    @State private var showingSquashSheet = false
     @State private var loadingCommits = true
     @State private var loadingMoreCommits = false
     @State private var hasMoreCommits = true
@@ -78,20 +79,26 @@ struct DiffWindowView: View {
         }
         .onChange(of: selectedPath) { _, path in
             guard let path, let entry = files.first(where: { $0.id == path }) else { return }
-            selectedCommit = nil
+            selectedCommits = []
             selectedStash = nil
             Task { await loadDiff(entry: entry) }
         }
-        .onChange(of: selectedCommit) { _, hash in
-            guard let hash else { return }
+        .onChange(of: selectedCommits) { _, hashes in
+            guard !hashes.isEmpty else { return }
             selectedPath = nil
             selectedStash = nil
-            Task { await loadCommitDiff(hash: hash) }
+            // Show a diff only when a single commit is selected; multi-select is for squashing.
+            if hashes.count == 1, let hash = hashes.first {
+                Task { await loadCommitDiff(hash: hash) }
+            } else {
+                diffLines = []
+                tooLarge = false
+            }
         }
         .onChange(of: selectedStash) { _, ref in
             guard let ref else { return }
             selectedPath = nil
-            selectedCommit = nil
+            selectedCommits = []
             Task { await loadStashDiff(ref: ref) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .repoFilesDidChange)) { note in
@@ -112,6 +119,26 @@ struct DiffWindowView: View {
                 Task { await resetToCommit(commit, hard: hard) }
             }
         }
+        .sheet(isPresented: $showingSquashSheet) {
+            SquashSheet(count: squashableCount ?? 0, defaultMessage: squashDefaultMessage) { message in
+                Task { await squashSelectedCommits(message: message) }
+            }
+        }
+    }
+
+    // Number of commits to squash, but only when the selection is the top N
+    // contiguous commits (a soft reset can only collapse commits down from HEAD).
+    private var squashableCount: Int? {
+        let n = selectedCommits.count
+        guard n >= 2, commits.count >= n else { return nil }
+        let topIDs = Set(commits.prefix(n).map(\.id))
+        return topIDs == selectedCommits ? n : nil
+    }
+
+    // Combined message seeded from the selected commits, oldest first.
+    private var squashDefaultMessage: String {
+        guard let n = squashableCount else { return "" }
+        return commits.prefix(n).reversed().map(\.subject).joined(separator: "\n\n")
     }
 
     // MARK: - Sidebar (Changed files + History)
@@ -148,7 +175,7 @@ struct DiffWindowView: View {
 
     private var fileListSection: some View {
         VStack(spacing: 0) {
-            sectionHeader("CHANGED FILES", count: files.isEmpty ? nil : files.count)
+            changedFilesHeader
             Divider()
             if loadingFiles {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -166,6 +193,36 @@ struct DiffWindowView: View {
             }
             Divider()
             commitPanel
+        }
+    }
+
+    // Header for the changed-files list with a single checkbox that toggles all
+    // files between checked and unchecked.
+    private var changedFilesHeader: some View {
+        HStack(spacing: 6) {
+            if !files.isEmpty {
+                Toggle("", isOn: Binding(
+                    get: { allFilesChecked },
+                    set: { _ in toggleAllChecked() }
+                ))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .help(allFilesChecked ? "Uncheck all" : "Check all")
+            }
+            sectionHeader("CHANGED FILES", count: files.isEmpty ? nil : files.count)
+        }
+        .padding(.leading, files.isEmpty ? 0 : 10)
+    }
+
+    private var allFilesChecked: Bool {
+        !files.isEmpty && files.allSatisfy { checkedPaths.contains($0.id) }
+    }
+
+    private func toggleAllChecked() {
+        if allFilesChecked {
+            checkedPaths.removeAll()
+        } else {
+            checkedPaths = Set(files.map { $0.id })
         }
     }
 
@@ -200,24 +257,31 @@ struct DiffWindowView: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            List(selection: $selectedCommit) {
+            List(selection: $selectedCommits) {
                 ForEach(commits) { commit in
                     commitRow(commit).tag(commit.id)
                 }
                 if hasMoreCommits {
-                    Button(action: { Task { await loadCommits(reset: false) } }) {
-                        HStack(spacing: 6) {
-                            if loadingMoreCommits {
-                                ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
+                    HStack {
+                        Spacer()
+                        Button(action: { Task { await loadCommits(reset: false) } }) {
+                            HStack(spacing: 6) {
+                                if loadingMoreCommits {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "arrow.down.circle")
+                                }
+                                Text("Load more")
+                                    .font(.system(size: 11, weight: .medium))
                             }
-                            Text("Load more")
-                                .font(.system(size: 11, weight: .medium))
                         }
-                        .frame(maxWidth: .infinity)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(loadingMoreCommits)
+                        Spacer()
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(loadingMoreCommits)
-                    .padding(.vertical, 2)
+                    .listRowSeparator(.hidden)
+                    .padding(.vertical, 4)
                 }
             }
             .listStyle(.sidebar)
@@ -322,10 +386,26 @@ struct DiffWindowView: View {
         .padding(.vertical, 2)
         .help("\(commit.shortHash) — \(commit.subject)")
         .contextMenu {
-            Button {
-                resetTargetCommit = commit
-            } label: {
-                Label("Move current branch to this commit…", systemImage: "arrow.uturn.backward.circle")
+            if selectedCommits.count <= 1 {
+                Button {
+                    resetTargetCommit = commit
+                } label: {
+                    Label("Move current branch to this commit…", systemImage: "arrow.uturn.backward.circle")
+                }
+            }
+            if let count = squashableCount {
+                Divider()
+                Button {
+                    showingSquashSheet = true
+                } label: {
+                    Label("Squash \(count) commits…", systemImage: "arrow.triangle.merge")
+                }
+            } else if selectedCommits.count >= 2 {
+                Divider()
+                Button {} label: {
+                    Label("Squash — select consecutive commits from the top", systemImage: "arrow.triangle.merge")
+                }
+                .disabled(true)
             }
         }
     }
@@ -435,7 +515,7 @@ struct DiffWindowView: View {
 
     private var diffHeaderText: String {
         if let path = selectedPath { return path }
-        if let hash = selectedCommit,
+        if selectedCommits.count == 1, let hash = selectedCommits.first,
            let commit = commits.first(where: { $0.id == hash }) {
             return "\(commit.shortHash)  \(commit.subject)"
         }
@@ -450,8 +530,12 @@ struct DiffWindowView: View {
     private var diffContent: some View {
         if loadingDiff {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if selectedPath == nil && selectedCommit == nil && selectedStash == nil {
+        } else if selectedPath == nil && selectedCommits.isEmpty && selectedStash == nil {
             Text("Select a file, commit, or stash to view changes")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if selectedCommits.count > 1 {
+            Text("\(selectedCommits.count) commits selected")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if tooLarge {
@@ -508,7 +592,7 @@ struct DiffWindowView: View {
             let appeared = currentIDs.subtracting(previousIDs)
             checkedPaths = checkedPaths.intersection(currentIDs).union(appeared)
             // Only auto-select the first file on the initial load (nothing selected yet).
-            if selectedPath == nil && selectedCommit == nil {
+            if selectedPath == nil && selectedCommits.isEmpty {
                 selectedPath = files.first?.id
             } else if let path = selectedPath, !currentIDs.contains(path) {
                 // The selected file is gone (committed/discarded) — clear the stale diff.
@@ -577,10 +661,9 @@ struct DiffWindowView: View {
             let raw = try await git.getCommitHistory(at: repo.url, skip: 0, limit: count)
             commits = raw.map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate, tags: $0.tags) }
             hasMoreCommits = raw.count == count
-            // Only drop the selection if the selected commit no longer exists (e.g. history rewritten)
-            if let sel = selectedCommit, !commits.contains(where: { $0.id == sel }) {
-                selectedCommit = nil
-            }
+            // Drop any selected commits that no longer exist (e.g. history rewritten)
+            let existing = Set(commits.map(\.id))
+            selectedCommits.formIntersection(existing)
         } catch {
             print("[ERROR] DiffWindowView refreshCommits: \(error)")
         }
@@ -640,6 +723,21 @@ struct DiffWindowView: View {
             await refreshCommits()
         } catch {
             print("[ERROR] DiffWindowView resetToCommit: \(error)")
+        }
+    }
+
+    private func squashSelectedCommits(message: String) async {
+        guard let count = squashableCount else { return }
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            _ = try await git.squashCommits(at: repo.url, count: count, message: trimmed)
+            selectedCommits = []
+            NotificationCenter.default.post(name: .repoDidCommit, object: repo.url)
+            await loadFiles()
+            await refreshCommits()
+        } catch {
+            print("[ERROR] DiffWindowView squashSelectedCommits: \(error)")
         }
     }
 
@@ -782,6 +880,58 @@ private struct MoveBranchSheet: View {
         }
         .padding(20)
         .frame(width: 420)
+    }
+}
+
+// MARK: - Squash commits sheet
+
+private struct SquashSheet: View {
+    let count: Int
+    let defaultMessage: String
+    let onConfirm: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var message: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Squash \(count) Commits")
+                    .font(.headline)
+                Text("Combine the top \(count) commits into a single commit.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Commit message")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            CommitMessageEditor(text: $message)
+                .frame(height: 140)
+                .background(Color(nsColor: .textBackgroundColor))
+                .cornerRadius(5)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                )
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Squash") {
+                    onConfirm(message)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .onAppear { message = defaultMessage }
     }
 }
 
