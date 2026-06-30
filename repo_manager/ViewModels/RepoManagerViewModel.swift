@@ -15,6 +15,8 @@ class RepoManagerViewModel {
     var maxConcurrentOperations = 4
     var showingRecheckoutMenu = false
     var customBranchInput = ""
+    // Union of branches across the selected repos, shown in the recheckout popup
+    var recheckoutBranches: [String] = []
     var showingHardResetConfirmation = false
     var showingForcePushConfirmation = false
     var xcodeProjects: [XcodeProject] = []
@@ -328,6 +330,21 @@ class RepoManagerViewModel {
         selectedRepoIDs.removeAll()
     }
 
+    // True when every selectable (non-loading) repo is selected
+    var allSelected: Bool {
+        let selectable = repositories.filter { $0.status != .loading }
+        return !selectable.isEmpty && selectable.allSatisfy { selectedRepoIDs.contains($0.id) }
+    }
+
+    // Toggle between selecting all and deselecting all
+    func toggleSelectAll() {
+        if allSelected {
+            deselectAll()
+        } else {
+            selectAll()
+        }
+    }
+
     // Pull selected repositories
     @MainActor
     func pullSelected() async {
@@ -351,6 +368,22 @@ class RepoManagerViewModel {
             try await self.gitService.recheckout(at: repo.url)
         }
         await refreshAllRepositoryStatuses()
+    }
+
+    // Load the union of local + remote branches across the selected repos so the
+    // recheckout popup can offer them as pickable suggestions.
+    @MainActor
+    func loadRecheckoutBranches() async {
+        recheckoutBranches = []
+        var seen = Set<String>()
+        var all: [String] = []
+        for repo in selectedRepositories {
+            let branches = (try? await gitService.getBranches(at: repo.url)) ?? []
+            for branch in branches where seen.insert(branch).inserted {
+                all.append(branch)
+            }
+        }
+        recheckoutBranches = all.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     // Recheckout selected repositories to custom branch

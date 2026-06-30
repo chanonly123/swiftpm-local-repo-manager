@@ -9,17 +9,13 @@ struct TabBarView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    ForEach(tabs) { tab in
-                        TabItemView(
-                            tab: tab,
-                            isSelected: selectedTabID == tab.id,
-                            onSelect: { onSelectTab(tab.id) },
-                            onClose: { onCloseTab(tab.id) }
-                        )
-                    }
-                }
+            ForEach(tabs) { tab in
+                TabItemView(
+                    tab: tab,
+                    isSelected: selectedTabID == tab.id,
+                    onSelect: { onSelectTab(tab.id) },
+                    onClose: { onCloseTab(tab.id) }
+                )
             }
 
             // Add tab button
@@ -41,8 +37,11 @@ struct TabBarView: View {
             .help("New Tab")
             .padding(.horizontal, 8)
             .padding(.trailing, 4)
+
+            Spacer(minLength: 0)
         }
         .frame(height: 32)
+        .frame(maxWidth: .infinity)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 }
@@ -55,13 +54,23 @@ struct TabItemView: View {
 
     @State private var isHovering = false
 
+    // Full path with the last path component bold
+    private var titleText: Text {
+        let path = tab.directoryPath ?? tab.name
+        let last = (path as NSString).lastPathComponent
+        let prefix = String(path.dropLast(last.count))
+        return Text(prefix).font(.system(size: 12))
+            + Text(last).font(.system(size: 12, weight: .bold))
+    }
+
     var body: some View {
         HStack(spacing: 4) {
-            Text(tab.name)
-                .font(.system(size: 12))
+            titleText
                 .lineLimit(1)
-                .frame(maxWidth: 140)
+                .truncationMode(.head)
+                .frame(minWidth: 90, maxWidth: 220, alignment: .leading)
                 .textSelection(.disabled)
+                .help(tab.directoryPath ?? tab.name)
 
             Button(action: onClose) {
                 Image(systemName: "xmark")

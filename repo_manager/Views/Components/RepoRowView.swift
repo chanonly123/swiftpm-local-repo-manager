@@ -177,6 +177,10 @@ struct RepoRowView: View {
 
     @ViewBuilder
     private func xcodeActions(for project: XcodeProject) -> some View {
+        Button(action: { NSWorkspace.shared.open(project.projectPath) }) {
+            Label("Open in Xcode", systemImage: "hammer")
+        }
+        Divider()
         Button(action: { onAddDependencies(project) }) {
             Label("Add Local Dependencies", systemImage: "link.badge.plus")
         }
