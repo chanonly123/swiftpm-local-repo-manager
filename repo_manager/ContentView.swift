@@ -105,14 +105,6 @@ struct TabContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Toolbar
-            toolbar
-                .padding()
-                .background(Color(nsColor: .controlBackgroundColor))
-                .disabled(viewModel.isScanning || viewModel.isPerformingOperation)
-
-            Divider()
-
             // Main content
             Group {
                 if viewModel.isScanning {
@@ -185,44 +177,29 @@ struct TabContentView: View {
 
 // MARK: - TabContentView Extensions
 extension TabContentView {
-    // MARK: - Toolbar
-    private var toolbar: some View {
-        HStack {
-            if let directory = viewModel.currentDirectory {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(directory.lastPathComponent)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    Text(directory.path)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .padding(.horizontal, 8)
-            }
-
-            Spacer()
-
-            if updateAvailable && AppUpdater.canUpdate {
-                Button(action: {
-                    showingUpdateConfirmation = true
-                }) {
-                    Label("Update App", systemImage: "arrow.down.app")
-                }
-                .help("Pull the latest changes, rebuild, and relaunch the app")
-            }
-
+    // Update App button — shown at the left of the bottom bar when an update is available
+    @ViewBuilder
+    private var updateButton: some View {
+        if updateAvailable && AppUpdater.canUpdate {
             Button(action: {
-                Task {
-                    await viewModel.scanRepositories()
-                }
+                showingUpdateConfirmation = true
             }) {
-                Label("Scan", systemImage: "arrow.clockwise")
+                Label("Update App", systemImage: "arrow.down.app")
             }
-            .disabled(viewModel.currentDirectory == nil || viewModel.isScanning || viewModel.isPerformingOperation)
+            .help("Pull the latest changes, rebuild, and relaunch the app")
         }
+    }
+
+    // Scan button — shown at the left of the bottom bar
+    private var scanButton: some View {
+        Button(action: {
+            Task {
+                await viewModel.scanRepositories()
+            }
+        }) {
+            Label("Scan", systemImage: "arrow.clockwise")
+        }
+        .disabled(viewModel.currentDirectory == nil || viewModel.isScanning || viewModel.isPerformingOperation)
     }
 
     // MARK: - Repository List
@@ -264,26 +241,21 @@ extension TabContentView {
     // MARK: - Bottom Bar
     private var bottomBar: some View {
         HStack {
-            // Selection controls
-            HStack(spacing: 8) {
+            updateButton
+
+            scanButton
+
+            // Selection control — single checkbox toggles select / deselect all
+            Toggle(isOn: Binding(
+                get: { viewModel.allSelected },
+                set: { _ in viewModel.toggleSelectAll() }
+            )) {
                 Text("\(viewModel.selectedCount) of \(viewModel.repositories.count) selected")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                Button(action: {
-                    viewModel.selectAll()
-                }) {
-                    Label("Select All", systemImage: "checkmark.square")
-                }
-                .disabled(viewModel.repositories.isEmpty || viewModel.hasLoadingRepos)
-
-                Button(action: {
-                    viewModel.deselectAll()
-                }) {
-                    Label("Deselect All", systemImage: "square")
-                }
-                .disabled(!viewModel.hasSelection)
             }
+            .toggleStyle(.checkbox)
+            .disabled(viewModel.repositories.isEmpty || viewModel.hasLoadingRepos)
 
             Spacer()
 
@@ -461,19 +433,6 @@ extension TabContentView {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
 
-                // Develop branch option
-                Button(action: {
-                    viewModel.showingRecheckoutMenu = false
-                    Task {
-                        await viewModel.recheckoutToCustomBranch("develop")
-                    }
-                }) {
-                    Label("develop", systemImage: "arrow.triangle.branch")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-
                 Divider()
                     .padding(.vertical, 8)
 
@@ -484,41 +443,78 @@ extension TabContentView {
                         .foregroundStyle(.secondary)
 
                     HStack {
-                        TextField("Branch name", text: $viewModel.customBranchInput)
+                        TextField("Search or type a branch name", text: $viewModel.customBranchInput)
                             .textFieldStyle(.roundedBorder)
-                            .onSubmit {
-                                if !viewModel.customBranchInput.isEmpty {
-                                    let branchName = viewModel.customBranchInput
-                                    viewModel.showingRecheckoutMenu = false
-                                    viewModel.customBranchInput = ""
-                                    Task {
-                                        await viewModel.recheckoutToCustomBranch(branchName)
-                                    }
-                                }
-                            }
+                            .onSubmit { recheckout(to: viewModel.customBranchInput) }
 
-                        Button(action: {
-                            if !viewModel.customBranchInput.isEmpty {
-                                let branchName = viewModel.customBranchInput
-                                viewModel.showingRecheckoutMenu = false
-                                viewModel.customBranchInput = ""
-                                Task {
-                                    await viewModel.recheckoutToCustomBranch(branchName)
-                                }
-                            }
-                        }) {
+                        Button(action: { recheckout(to: viewModel.customBranchInput) }) {
                             Label("Go", systemImage: "arrow.right.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(viewModel.customBranchInput.isEmpty)
                     }
+
+                    recheckoutBranchList
                 }
             }
             .padding()
 
             Spacer()
         }
-        .frame(width: 400, height: 350)
+        .frame(width: 400, height: 460)
+        .task { await viewModel.loadRecheckoutBranches() }
+    }
+
+    // Filterable list of branches (local + remote) across the selected repos
+    private var recheckoutBranchSuggestions: [String] {
+        let query = viewModel.customBranchInput.trimmingCharacters(in: .whitespaces).lowercased()
+        return viewModel.recheckoutBranches.filter { query.isEmpty || $0.lowercased().contains(query) }
+    }
+
+    @ViewBuilder
+    private var recheckoutBranchList: some View {
+        if !recheckoutBranchSuggestions.isEmpty {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(recheckoutBranchSuggestions, id: \.self) { branch in
+                        Button(action: { recheckout(to: branch) }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.triangle.branch")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                Text(branch)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, 5)
+                            .padding(.horizontal, 8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(maxHeight: 130)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        } else if viewModel.recheckoutBranches.isEmpty {
+            Text("Loading branches…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Text("No matching branches")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func recheckout(to branch: String) {
+        let branchName = branch.trimmingCharacters(in: .whitespaces)
+        guard !branchName.isEmpty else { return }
+        viewModel.showingRecheckoutMenu = false
+        viewModel.customBranchInput = ""
+        Task { await viewModel.recheckoutToCustomBranch(branchName) }
     }
 }
 
