@@ -23,7 +23,7 @@ struct MergeRebaseSheet: View {
         }
     }
 
-    let vm: RepoViewModel
+    @Bindable var vm: RepoViewModel
     let mode: Mode
 
     private var repo: GitRepo { vm.repo }

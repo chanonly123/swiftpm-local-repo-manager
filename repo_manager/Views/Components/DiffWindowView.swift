@@ -4,7 +4,8 @@ import AppKit
 struct DiffWindowView: View {
     // Shared with the row/sheets — the single source of truth for this repo. The window
     // observes it directly (no NotificationCenter) and refreshes it after its own commits.
-    let vm: RepoViewModel
+    // @Bindable so the view re-renders on the VM's observable changes.
+    @Bindable var vm: RepoViewModel
 
     private var repo: GitRepo { vm.repo }
 
@@ -31,19 +32,34 @@ struct DiffWindowView: View {
     @State private var selectedStash: String?
     @State private var loadingStashes = true
     @State private var resetTargetCommit: CommitEntry?
+    @State private var branchActionMode: MergeRebaseSheet.Mode?
+    // The hosting NSWindow, captured so we can keep its (non-SwiftUI) title in sync.
+    @State private var hostWindow: NSWindow?
 
     private let git = GitService()
     private let sizeLimit = 1_000_000
     private let commitPageSize = 10
 
     var body: some View {
-        HSplitView {
-            sidebarPanel
-                .frame(minWidth: 200, idealWidth: 240, maxWidth: 500)
-            diffPanel
-                .frame(minWidth: 400, maxWidth: .infinity)
+        VStack(spacing: 0) {
+            HSplitView {
+                sidebarPanel
+                    .frame(minWidth: 200, idealWidth: 240, maxWidth: 500)
+                diffPanel
+                    .frame(minWidth: 400, maxWidth: .infinity)
+            }
+            Divider()
+            branchOpsBar
         }
         .frame(minWidth: 700, minHeight: 450)
+        .background(DiffWindowAccessor { window in
+            hostWindow = window
+            window.title = DiffWindowManager.title(for: repo)
+        })
+        // Keep the window title live when the branch changes (e.g. a switch/merge/rebase).
+        .onChange(of: repo.currentBranch) {
+            hostWindow?.title = DiffWindowManager.title(for: repo)
+        }
         .task {
             await loadFiles()
             await loadCommits(reset: true)
@@ -97,6 +113,66 @@ struct DiffWindowView: View {
                 Task { await squashSelectedCommits(message: message) }
             }
         }
+        .sheet(item: $branchActionMode) { mode in
+            MergeRebaseSheet(vm: vm, mode: mode)
+        }
+    }
+
+    // MARK: - Branch operations bar (merge / rebase, plus continue / abort mid-operation)
+
+    private var branchOpsBar: some View {
+        HStack(spacing: 8) {
+            if let branch = repo.currentBranch {
+                Image(systemName: "arrow.branch")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(branch)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if let operation = repo.inProgressOperation {
+                Label(operation.rawValue, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.red.opacity(0.12))
+                    .clipShape(Capsule())
+
+                Button("Continue") { Task { await vm.continueInProgress() } }
+                    .controlSize(.small)
+                    .disabled(vm.isOperating)
+                Button("Abort", role: .destructive) { Task { await vm.abortInProgress() } }
+                    .controlSize(.small)
+                    .disabled(vm.isOperating)
+            }
+
+            if let error = vm.lastOperationError {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .help(error)
+            }
+
+            Spacer()
+
+            Button(action: { branchActionMode = .merge }) {
+                Label("Merge…", systemImage: "arrow.triangle.merge")
+            }
+            .controlSize(.small)
+            .disabled(vm.isOperating)
+
+            Button(action: { branchActionMode = .rebase }) {
+                Label("Rebase…", systemImage: "arrow.triangle.pull")
+            }
+            .controlSize(.small)
+            .disabled(vm.isOperating)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 
     // Number of commits to squash, but only when the selection is the top N
@@ -557,8 +633,12 @@ struct DiffWindowView: View {
         do {
             try await git.stageFiles(at: repo.url, paths: paths)
             _ = try await git.commitStaged(at: repo.url, message: message)
+            // Keep the window open — clear the composer and refresh in place.
+            commitMessage = ""
+            checkedPaths.removeAll()
             await vm.refresh()
-            DiffWindowManager.close(for: vm)
+            await loadFiles()
+            await refreshCommits()
         } catch {
             commitError = error.localizedDescription
         }
@@ -571,7 +651,7 @@ struct DiffWindowView: View {
             await vm.refresh()
             await loadFiles()
         } catch {
-            print("[ERROR] DiffWindowView discardFile: \(error)")
+            debugLog("[ERROR] DiffWindowView discardFile: \(error)")
         }
     }
 
@@ -595,7 +675,7 @@ struct DiffWindowView: View {
                 diffLines = []
             }
         } catch {
-            print("[ERROR] DiffWindowView loadFiles: \(error)")
+            debugLog("[ERROR] DiffWindowView loadFiles: \(error)")
         }
     }
 
@@ -616,7 +696,7 @@ struct DiffWindowView: View {
             tooLarge = false
             diffLines = parseDiff(raw)
         } catch {
-            print("[ERROR] DiffWindowView loadDiff: \(error)")
+            debugLog("[ERROR] DiffWindowView loadDiff: \(error)")
         }
     }
 
@@ -629,7 +709,7 @@ struct DiffWindowView: View {
                 commits = raw.map { CommitEntry(id: $0.hash, shortHash: $0.shortHash, subject: $0.subject, author: $0.author, relativeDate: $0.relativeDate, tags: $0.tags) }
                 hasMoreCommits = raw.count == commitPageSize
             } catch {
-                print("[ERROR] DiffWindowView loadCommits: \(error)")
+                debugLog("[ERROR] DiffWindowView loadCommits: \(error)")
             }
         } else {
             guard !loadingMoreCommits else { return }
@@ -644,7 +724,7 @@ struct DiffWindowView: View {
                 commits.append(contentsOf: newEntries)
                 hasMoreCommits = raw.count == commitPageSize
             } catch {
-                print("[ERROR] DiffWindowView loadCommits(more): \(error)")
+                debugLog("[ERROR] DiffWindowView loadCommits(more): \(error)")
             }
         }
     }
@@ -660,7 +740,7 @@ struct DiffWindowView: View {
             let existing = Set(commits.map(\.id))
             selectedCommits.formIntersection(existing)
         } catch {
-            print("[ERROR] DiffWindowView refreshCommits: \(error)")
+            debugLog("[ERROR] DiffWindowView refreshCommits: \(error)")
         }
     }
 
@@ -674,7 +754,7 @@ struct DiffWindowView: View {
             guard raw.utf8.count <= sizeLimit else { tooLarge = true; return }
             diffLines = parseDiff(raw)
         } catch {
-            print("[ERROR] DiffWindowView loadCommitDiff: \(error)")
+            debugLog("[ERROR] DiffWindowView loadCommitDiff: \(error)")
         }
     }
 
@@ -689,7 +769,7 @@ struct DiffWindowView: View {
                 selectedStash = nil
             }
         } catch {
-            print("[ERROR] DiffWindowView loadStashes: \(error)")
+            debugLog("[ERROR] DiffWindowView loadStashes: \(error)")
         }
     }
 
@@ -703,7 +783,7 @@ struct DiffWindowView: View {
             guard raw.utf8.count <= sizeLimit else { tooLarge = true; return }
             diffLines = parseDiff(raw)
         } catch {
-            print("[ERROR] DiffWindowView loadStashDiff: \(error)")
+            debugLog("[ERROR] DiffWindowView loadStashDiff: \(error)")
         }
     }
 
@@ -717,7 +797,7 @@ struct DiffWindowView: View {
             await loadFiles()
             await refreshCommits()
         } catch {
-            print("[ERROR] DiffWindowView resetToCommit: \(error)")
+            debugLog("[ERROR] DiffWindowView resetToCommit: \(error)")
         }
     }
 
@@ -732,7 +812,7 @@ struct DiffWindowView: View {
             await loadFiles()
             await refreshCommits()
         } catch {
-            print("[ERROR] DiffWindowView squashSelectedCommits: \(error)")
+            debugLog("[ERROR] DiffWindowView squashSelectedCommits: \(error)")
         }
     }
 
@@ -747,7 +827,7 @@ struct DiffWindowView: View {
             await loadFiles()
             await loadStashes()
         } catch {
-            print("[ERROR] DiffWindowView applyStash: \(error)")
+            debugLog("[ERROR] DiffWindowView applyStash: \(error)")
         }
     }
 
@@ -757,7 +837,7 @@ struct DiffWindowView: View {
             if selectedStash == stash.id { selectedStash = nil; diffLines = [] }
             await loadStashes()
         } catch {
-            print("[ERROR] DiffWindowView dropStash: \(error)")
+            debugLog("[ERROR] DiffWindowView dropStash: \(error)")
         }
     }
 
@@ -816,4 +896,20 @@ struct DiffWindowView: View {
         default: return .gray
         }
     }
+}
+
+// Resolves the hosting NSWindow of a SwiftUI view so we can drive its (non-SwiftUI) title.
+private struct DiffWindowAccessor: NSViewRepresentable {
+    let onResolve: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        // The view isn't attached to its window yet during makeNSView; resolve next runloop.
+        DispatchQueue.main.async {
+            if let window = view.window { onResolve(window) }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }

@@ -25,7 +25,7 @@ enum DiffWindowManager {
 
         let controller = NSHostingController(rootView: DiffWindowView(vm: vm))
         let window = NSWindow(contentViewController: controller)
-        window.title = "Diff - \(repo.url.lastPathComponent)"
+        window.title = title(for: repo)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.setContentSize(savedContentSize())
@@ -57,6 +57,12 @@ enum DiffWindowManager {
             }
         }
         observers[key] = [resizeToken, closeToken]
+    }
+
+    // Window title: "Diff - <repo> (<branch>)", or just "Diff - <repo>" with no current branch.
+    // Shared so DiffWindowView can keep the live NSWindow title in sync on branch changes.
+    static func title(for repo: GitRepo) -> String {
+        "Diff - \(repo.url.lastPathComponent)" + (repo.currentBranch.map { " (\($0))" } ?? "")
     }
 
     static func close(for vm: RepoViewModel) {

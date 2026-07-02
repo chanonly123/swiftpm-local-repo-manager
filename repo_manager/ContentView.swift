@@ -207,6 +207,9 @@ extension TabContentView {
         ScrollView {
             LazyVStack(spacing: 1) {
                 ForEach(viewModel.repoViewModels) { vm in
+                    // Observe each repo's change signal at the list level too, so background
+                    // refreshes are reflected even if the leaf row's own observation doesn't fire.
+                    let _ = vm.changeToken
                     RepoRowView(
                         vm: vm,
                         xcodeProjects: viewModel.xcodeProjects(for: vm.repo),

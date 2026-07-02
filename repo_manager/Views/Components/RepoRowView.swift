@@ -2,7 +2,9 @@ import SwiftUI
 
 struct RepoRowView: View {
     // The single source of truth for this repo — shared with its sheets and diff window.
-    let vm: RepoViewModel
+    // @Bindable so the row re-renders when the VM's observable state changes (a plain `let`
+    // does not reliably drive updates for a leaf view inside the LazyVStack here).
+    @Bindable var vm: RepoViewModel
     let xcodeProjects: [XcodeProject]
     // Xcode tasks stay coordinator concerns (they touch the project files + repo list).
     var onAddDependencies: (XcodeProject) -> Void = { _ in }
@@ -11,13 +13,18 @@ struct RepoRowView: View {
 
     @State private var showNewBranchSheet = false
     @State private var showDeleteBranchSheet = false
-    @State private var branchActionMode: MergeRebaseSheet.Mode?
 
     // Convenience — the live repo data.
     private var repo: GitRepo { vm.repo }
 
     var body: some View {
-        HStack(spacing: 10) {
+        // Establish the observation dependency that actually drives this leaf view's updates.
+        // Reading vm.repo (below, via `repo`) does not reliably register the row as an observer
+        // here, so the row would stay stuck on stale data (e.g. the initial .loading placeholder)
+        // until a forced rebuild. changeToken bumps on every refresh/op, so observing it makes
+        // the row re-render whenever the repo's data changes.
+        let _ = vm.changeToken
+        return HStack(spacing: 10) {
             // Selection checkbox
             Button(action: { vm.isSelected.toggle() }) {
                 Image(systemName: vm.isSelected ? "checkmark.square.fill" : "square")
@@ -166,13 +173,6 @@ struct RepoRowView: View {
                     Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
                 }
                 Divider()
-                Button(action: { branchActionMode = .merge }) {
-                    Label("Merge Branch…", systemImage: "arrow.triangle.merge")
-                }
-                Button(action: { branchActionMode = .rebase }) {
-                    Label("Rebase Branch…", systemImage: "arrow.triangle.pull")
-                }
-                Divider()
                 Button(role: .destructive, action: { showDeleteBranchSheet = true }) {
                     Label("Delete Branch…", systemImage: "trash")
                 }
@@ -184,7 +184,7 @@ struct RepoRowView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help(repo.inProgressOperation != nil ? "\(repo.inProgressOperation!.rawValue) in progress — Git Operations" : "Git Operations (Merge / Rebase)")
+            .help(repo.inProgressOperation != nil ? "\(repo.inProgressOperation!.rawValue) in progress — Git Operations" : "Git Operations (Branches)")
             .disabled(repo.status == .loading || vm.isOperating)
 
             // Diff / History button
@@ -221,9 +221,6 @@ struct RepoRowView: View {
         .opacity(vm.isOperating ? 0.8 : 1.0)
         .sheet(isPresented: $showNewBranchSheet) {
             NewBranchSheet(vm: vm)
-        }
-        .sheet(item: $branchActionMode) { mode in
-            MergeRebaseSheet(vm: vm, mode: mode)
         }
         .sheet(isPresented: $showDeleteBranchSheet) {
             DeleteBranchSheet(vm: vm)
@@ -287,7 +284,7 @@ struct RepoRowView: View {
         if let scriptObject = NSAppleScript(source: myAppleScript) {
             scriptObject.executeAndReturnError(&error)
             if let error {
-                print("[ERROR] Failed to open terminal: \(error)")
+                debugLog("[ERROR] Failed to open terminal: \(error)")
             }
         }
     }

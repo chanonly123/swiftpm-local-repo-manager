@@ -47,8 +47,10 @@ final class RepoViewModel: Identifiable {
 
     @MainActor
     private func reload() async {
+        let old = repo.status.displayText
         repo = await gitService.getRepoInfo(at: repo.url)
         changeToken &+= 1
+        debugLog("[DEBUG] refresh \(repo.name): \(old) -> \(repo.status.displayText) branch=\(repo.currentBranch ?? "nil") token=\(changeToken)")
     }
 
     // MARK: - Operations
@@ -65,9 +67,9 @@ final class RepoViewModel: Identifiable {
         let snapshot = repo
         let result: OperationResult
         do {
-            print("[DEBUG] Starting \(operation.rawValue) on: \(snapshot.name)")
+            debugLog("[DEBUG] Starting \(operation.rawValue) on: \(snapshot.name)")
             let output = try await action(snapshot)
-            print("[SUCCESS] \(operation.rawValue) completed for: \(snapshot.name)")
+            debugLog("[SUCCESS] \(operation.rawValue) completed for: \(snapshot.name)")
             result = OperationResult(
                 repoName: "\(snapshot.name) (\(snapshot.url.path))",
                 operation: operation,
@@ -76,7 +78,7 @@ final class RepoViewModel: Identifiable {
                 timestamp: Date()
             )
         } catch {
-            print("[ERROR] \(operation.rawValue) failed for: \(snapshot.name): \(error.localizedDescription)")
+            debugLog("[ERROR] \(operation.rawValue) failed for: \(snapshot.name): \(error.localizedDescription)")
             lastOperationError = error.localizedDescription
             result = OperationResult(
                 repoName: "\(snapshot.name) (\(snapshot.url.path))",
