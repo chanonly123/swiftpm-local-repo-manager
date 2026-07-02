@@ -15,7 +15,7 @@ struct repo_managerApp: App {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
-                print("[DEBUG] App moved to background")
+                debugLog("[DEBUG] App moved to background")
             }
         }
     }

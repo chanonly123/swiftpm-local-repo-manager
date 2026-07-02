@@ -31,7 +31,7 @@ actor GitService {
         ]
 
         self.gitPath = possiblePaths.first { FileManager.default.fileExists(atPath: $0) } ?? "/usr/bin/git"
-        print("[DEBUG] Using git at: \(self.gitPath)")
+        debugLog("[DEBUG] Using git at: \(self.gitPath)")
     }
 
     // Check if directory is a valid git repository
@@ -530,10 +530,10 @@ actor GitService {
 
             return output
         } catch let error as GitServiceError {
-            if logErrors { print("[ERROR] runGitCommand: \(error.localizedDescription)") }
+            if logErrors { debugLog("[ERROR] runGitCommand: \(error.localizedDescription)") }
             throw error
         } catch {
-            if logErrors { print("[ERROR] runGitCommand: \(error.localizedDescription)") }
+            if logErrors { debugLog("[ERROR] runGitCommand: \(error.localizedDescription)") }
             throw GitServiceError.commandFailed(error.localizedDescription)
         }
     }
@@ -609,7 +609,7 @@ actor GitService {
                 inProgressOperation: getInProgressOperation(at: repoURL)
             )
         } catch {
-            print("[ERROR] getRepoInfo: \(error.localizedDescription)")
+            debugLog("[ERROR] getRepoInfo: \(error.localizedDescription)")
             return GitRepo(
                 name: name,
                 url: repoURL,

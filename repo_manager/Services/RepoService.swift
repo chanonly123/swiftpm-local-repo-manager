@@ -92,7 +92,7 @@ actor RepoService {
                     successCount += 1
                 } catch {
                     // Other errors are actual failures
-                    print("[ERROR] Failed to add \(repo.name): \(error)")
+                    debugLog("[ERROR] Failed to add \(repo.name): \(error)")
                 }
             }
         }

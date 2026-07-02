@@ -124,15 +124,15 @@ class TabsManager {
     // MARK: - Persistence
 
     private func loadTabs() {
-        print("[DEBUG] Loading tabs from UserDefaults...")
+        debugLog("[DEBUG] Loading tabs from UserDefaults...")
 
         if let data = userDefaults.data(forKey: tabsKey),
            let decodedTabs = try? JSONDecoder().decode([WorkspaceTab].self, from: data),
            !decodedTabs.isEmpty {
             tabs = decodedTabs
-            print("[DEBUG] Loaded \(tabs.count) tabs from UserDefaults")
+            debugLog("[DEBUG] Loaded \(tabs.count) tabs from UserDefaults")
             for tab in tabs {
-                print("[DEBUG]   - Tab: \(tab.name), Directory: \(tab.directoryPath ?? "none"), Has Bookmark: \(tab.bookmarkData != nil)")
+                debugLog("[DEBUG]   - Tab: \(tab.name), Directory: \(tab.directoryPath ?? "none"), Has Bookmark: \(tab.bookmarkData != nil)")
             }
 
             // Create ViewModels for each tab
@@ -140,7 +140,7 @@ class TabsManager {
                 let viewModel = RepoManagerViewModel()
                 // If tab has bookmark data, restore directory from it
                 if let bookmarkData = tab.bookmarkData {
-                    print("[DEBUG] Restoring directory for tab: \(tab.name)")
+                    debugLog("[DEBUG] Restoring directory for tab: \(tab.name)")
                     Task { @MainActor in
                         await viewModel.loadDirectory(from: bookmarkData)
                     }
@@ -153,12 +153,12 @@ class TabsManager {
                let selectedUUID = UUID(uuidString: selectedIDString),
                tabs.contains(where: { $0.id == selectedUUID }) {
                 selectedTabID = selectedUUID
-                print("[DEBUG] Restored selected tab: \(selectedUUID)")
+                debugLog("[DEBUG] Restored selected tab: \(selectedUUID)")
             } else {
                 selectedTabID = tabs.first?.id
             }
         } else {
-            print("[DEBUG] No saved tabs found, creating initial tab")
+            debugLog("[DEBUG] No saved tabs found, creating initial tab")
             // Create initial tab
             let initialTab = WorkspaceTab(name: "Untitled")
             tabs = [initialTab]
@@ -171,14 +171,14 @@ class TabsManager {
     private func saveTabs() {
         if let encoded = try? JSONEncoder().encode(tabs) {
             userDefaults.set(encoded, forKey: tabsKey)
-            print("[DEBUG] Saved \(tabs.count) tabs to UserDefaults")
+            debugLog("[DEBUG] Saved \(tabs.count) tabs to UserDefaults")
             for tab in tabs {
-                print("[DEBUG]   - Tab: \(tab.name), Directory: \(tab.directoryPath ?? "none"), Has Bookmark: \(tab.bookmarkData != nil)")
+                debugLog("[DEBUG]   - Tab: \(tab.name), Directory: \(tab.directoryPath ?? "none"), Has Bookmark: \(tab.bookmarkData != nil)")
             }
         }
         if let selectedID = selectedTabID {
             userDefaults.set(selectedID.uuidString, forKey: selectedTabKey)
-            print("[DEBUG] Saved selected tab: \(selectedID)")
+            debugLog("[DEBUG] Saved selected tab: \(selectedID)")
         }
     }
 }

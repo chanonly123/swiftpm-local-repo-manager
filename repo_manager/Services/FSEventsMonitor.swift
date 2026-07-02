@@ -25,7 +25,7 @@ class FSEventsMonitor {
         // Create set of paths for quick lookup
         let monitoredPaths = Set(repoURLs.map { $0.path })
 
-        print("[DEBUG] Starting monitoring for \(repoURLs.count) repositories")
+        debugLog("[DEBUG] Starting monitoring for \(repoURLs.count) repositories")
 
         // Create event stream for all repository paths with 1s latency to coalesce rapid changes
         let eventStream = FolderContentMonitor.makeStream(
@@ -59,10 +59,10 @@ class FSEventsMonitor {
                     }
                 }
             }
-            print("[DEBUG] Monitoring task completed")
+            debugLog("[DEBUG] Monitoring task completed")
         }
 
-        print("[DEBUG] Started monitoring \(repoURLs.count) repositories")
+        debugLog("[DEBUG] Started monitoring \(repoURLs.count) repositories")
     }
 
     /// Cancel any pending debounce for this URL and schedule a fresh one.
@@ -84,12 +84,12 @@ class FSEventsMonitor {
 
     func pause() {
         isPaused = true
-        print("[DEBUG] FSEvents monitoring paused (app inactive)")
+        debugLog("[DEBUG] FSEvents monitoring paused (app inactive)")
     }
 
     func resume() {
         isPaused = false
-        print("[DEBUG] FSEvents monitoring resumed (app active)")
+        debugLog("[DEBUG] FSEvents monitoring resumed (app active)")
     }
 
     /// Stop monitoring all repositories and cancel any pending debounce tasks
@@ -100,7 +100,7 @@ class FSEventsMonitor {
             self?.debounceTasks.values.forEach { $0.cancel() }
             self?.debounceTasks.removeAll()
         }
-        print("[DEBUG] Stopped monitoring repositories")
+        debugLog("[DEBUG] Stopped monitoring repositories")
     }
 
     deinit {
