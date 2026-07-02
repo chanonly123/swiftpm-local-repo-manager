@@ -260,7 +260,7 @@ struct DiffWindowView: View {
         VStack(spacing: 0) {
             changedFilesHeader
             Divider()
-            if !files.isEmpty && loadingFiles {
+            if files.isEmpty && loadingFiles {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if files.isEmpty {
                 Text("No changes")
