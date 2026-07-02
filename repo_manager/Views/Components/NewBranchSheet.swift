@@ -11,6 +11,7 @@ struct NewBranchSheet: View {
     @State private var branchName = ""
     @State private var changeHandling: ChangeHandling = .bring
     @State private var branches: [String] = []
+    @State private var isFetching = false
 
     private enum ChangeHandling { case bring, stash }
 
@@ -54,12 +55,23 @@ struct NewBranchSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Switch or Create Branch")
-                    .font(.headline)
-                Text(repo.name)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Switch or Create Branch")
+                        .font(.headline)
+                    Text(repo.name)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if isFetching {
+                    HStack(spacing: 4) {
+                        ProgressView().controlSize(.small)
+                        Text("Fetching…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             // Source branch the new branch will be created from / switched away from
@@ -111,6 +123,12 @@ struct NewBranchSheet: View {
         .padding(20)
         .frame(width: 600)
         .task {
+            // Show already-known branches immediately, then fetch in the background so
+            // branches created on the remote since the last fetch show up too.
+            branches = (try? await git.getBranches(at: repo.url)) ?? []
+            isFetching = true
+            _ = try? await git.fetch(at: repo.url)
+            isFetching = false
             branches = (try? await git.getBranches(at: repo.url)) ?? []
         }
     }
