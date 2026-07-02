@@ -133,6 +133,57 @@ actor GitService {
         return locals
     }
 
+    // Detect a git operation left mid-flight by inspecting marker files under `.git`.
+    // This is a pure filesystem check — no git process — so it's cheap to run on every refresh.
+    nonisolated func getInProgressOperation(at repoURL: URL) -> GitRepo.InProgressOperation? {
+        let gitDir = repoURL.appendingPathComponent(".git")
+        let fileManager = FileManager.default
+        func exists(_ component: String) -> Bool {
+            fileManager.fileExists(atPath: gitDir.appendingPathComponent(component).path)
+        }
+        // `git am` and an apply-based rebase both use rebase-apply; the `applying`
+        // marker distinguishes a mailbox apply from a rebase.
+        if exists("rebase-apply") {
+            return exists("rebase-apply/applying") ? .applyMailbox : .rebase
+        }
+        if exists("rebase-merge") { return .rebase }
+        if exists("MERGE_HEAD") { return .merge }
+        if exists("CHERRY_PICK_HEAD") { return .cherryPick }
+        if exists("REVERT_HEAD") { return .revert }
+        return nil
+    }
+
+    // Merge a branch into the current branch. Conflicts exit non-zero and surface as an error;
+    // the repo is then left in a merging state (see getInProgressOperation).
+    nonisolated func merge(at repoURL: URL, branch: String) async throws -> String {
+        let output = try await runGitCommand(args: ["merge", "--no-edit", branch], at: repoURL)
+        return output.isEmpty ? "✓ Merged \(branch) into current branch" : output
+    }
+
+    // Rebase the current branch onto the given branch. Conflicts exit non-zero and leave the
+    // repo mid-rebase.
+    nonisolated func rebase(at repoURL: URL, onto branch: String) async throws -> String {
+        let output = try await runGitCommand(args: ["rebase", branch], at: repoURL)
+        return output.isEmpty ? "✓ Rebased current branch onto \(branch)" : output
+    }
+
+    // Abort an in-progress operation (rebase/merge/cherry-pick/…), restoring the prior state.
+    nonisolated func abortInProgress(at repoURL: URL, operation: GitRepo.InProgressOperation) async throws -> String {
+        _ = try await runGitCommand(args: [operation.gitCommand, "--abort"], at: repoURL)
+        return "✓ Aborted \(operation.rawValue.lowercased())"
+    }
+
+    // Continue an in-progress operation after conflicts are resolved. GIT_EDITOR=true accepts the
+    // default commit message non-interactively so the command can't hang waiting on an editor.
+    nonisolated func continueInProgress(at repoURL: URL, operation: GitRepo.InProgressOperation) async throws -> String {
+        _ = try await runGitCommand(
+            args: [operation.gitCommand, "--continue"],
+            at: repoURL,
+            environment: ["GIT_EDITOR": "true"]
+        )
+        return "✓ Continued \(operation.rawValue.lowercased())"
+    }
+
     // Switch to an existing branch. Stashes uncommitted changes first when stashChanges is true.
     nonisolated func switchBranch(at repoURL: URL, name: String, stashChanges: Bool) async throws -> String {
         var messages: [String] = []
@@ -146,6 +197,25 @@ actor GitService {
         messages.append("Switching to \(name)...")
         _ = try await runGitCommand(args: ["checkout", name], at: repoURL)
         messages.append("✓ Switched to \(name)")
+        return messages.joined(separator: "\n")
+    }
+
+    // Delete a local branch (force, since the user explicitly chose to delete). When
+    // deleteRemote is true, also delete the matching branch on origin. A missing local
+    // branch isn't fatal when a remote delete was requested — the remote is still removed.
+    nonisolated func deleteBranch(at repoURL: URL, name: String, deleteRemote: Bool) async throws -> String {
+        var messages: [String] = []
+        do {
+            _ = try await runGitCommand(args: ["branch", "-D", name], at: repoURL)
+            messages.append("✓ Deleted local branch \(name)")
+        } catch {
+            guard deleteRemote else { throw error }
+            messages.append("• No local branch \(name) to delete")
+        }
+        if deleteRemote {
+            _ = try await runGitCommand(args: ["push", "origin", "--delete", name], at: repoURL)
+            messages.append("✓ Deleted remote branch origin/\(name)")
+        }
         return messages.joined(separator: "\n")
     }
 
@@ -406,11 +476,14 @@ actor GitService {
     }
 
     // Run a git command
-    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false) async throws -> String {
+    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = args
         process.currentDirectoryURL = repoURL
+        if let environment {
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        }
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -532,7 +605,8 @@ actor GitService {
                 hasConflicts: status.hasConflicts,
                 aheadCount: aheadBehind?.ahead,
                 behindCount: aheadBehind?.behind,
-                changedFilesCount: status.hasChanges ? changedFiles : nil
+                changedFilesCount: status.hasChanges ? changedFiles : nil,
+                inProgressOperation: getInProgressOperation(at: repoURL)
             )
         } catch {
             print("[ERROR] getRepoInfo: \(error.localizedDescription)")

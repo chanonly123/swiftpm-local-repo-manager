@@ -805,9 +805,9 @@ struct DiffWindowView: View {
         case "A": return .green
         case "D": return .red
         case "R": return .blue
-        case "!": return .red
+        case "!": return .orange
         case "+": return .green
-        default: return .orange
+        default: return .gray
         }
     }
 }

@@ -12,8 +12,15 @@ struct RepoRowView: View {
     var onToggleRunScripts: (XcodeProject) -> Void = { _ in }
     var onCreateBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
     var onSwitchBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
+    var onMerge: (GitRepo, String) -> Void = { _, _ in }
+    var onRebase: (GitRepo, String) -> Void = { _, _ in }
+    var onContinueInProgress: (GitRepo) -> Void = { _ in }
+    var onAbortInProgress: (GitRepo) -> Void = { _ in }
+    var onDeleteBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
 
     @State private var showNewBranchSheet = false
+    @State private var showDeleteBranchSheet = false
+    @State private var branchActionMode: MergeRebaseSheet.Mode?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -87,6 +94,22 @@ struct RepoRowView: View {
                 }
             }
 
+            // In-progress operation badge (mid-rebase / merge / cherry-pick / am)
+            if let operation = repo.inProgressOperation {
+                HStack(spacing: 3) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                    Text(operation.rawValue)
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(.red)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.red.opacity(0.12))
+                .clipShape(Capsule())
+                .help("\(operation.rawValue) in progress — use the git menu to continue or abort")
+            }
+
             Spacer()
 
             // Xcode tasks menu (only when this repo contains Xcode projects)
@@ -124,14 +147,42 @@ struct RepoRowView: View {
             .buttonStyle(.plain)
             .help("Open in Terminal")
 
-            // Branch switch / create button
-            Button(action: { showNewBranchSheet = true }) {
-                Image(systemName: "arrow.triangle.branch")
+            // Git operations menu (merge / rebase, plus continue / abort when mid-operation)
+            Menu {
+                if let operation = repo.inProgressOperation {
+                    Section("\(operation.rawValue) in progress") {
+                        Button(action: { onContinueInProgress(repo) }) {
+                            Label("Continue \(operation.rawValue)", systemImage: "arrow.right.circle")
+                        }
+                        Button(role: .destructive, action: { onAbortInProgress(repo) }) {
+                            Label("Abort \(operation.rawValue)", systemImage: "xmark.circle")
+                        }
+                    }
+                    Divider()
+                }
+                Button(action: { showNewBranchSheet = true }) {
+                    Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
+                }
+                Divider()
+                Button(action: { branchActionMode = .merge }) {
+                    Label("Merge Branch…", systemImage: "arrow.triangle.merge")
+                }
+                Button(action: { branchActionMode = .rebase }) {
+                    Label("Rebase Branch…", systemImage: "arrow.triangle.pull")
+                }
+                Divider()
+                Button(role: .destructive, action: { showDeleteBranchSheet = true }) {
+                    Label("Delete Branch…", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(repo.inProgressOperation != nil ? .red : .secondary)
             }
-            .buttonStyle(.plain)
-            .help("Switch or Create Branch")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(repo.inProgressOperation != nil ? "\(repo.inProgressOperation!.rawValue) in progress — Git Operations" : "Git Operations (Merge / Rebase)")
             .disabled(repo.status == .loading || isPerformingOperation)
 
             // Diff / History button
@@ -172,6 +223,19 @@ struct RepoRowView: View {
                 onSwitch: { name, stashChanges in onSwitchBranch(repo, name, stashChanges) },
                 onCreate: { name, stashChanges in onCreateBranch(repo, name, stashChanges) }
             )
+        }
+        .sheet(item: $branchActionMode) { mode in
+            MergeRebaseSheet(repo: repo, mode: mode) { branch in
+                switch mode {
+                case .merge: onMerge(repo, branch)
+                case .rebase: onRebase(repo, branch)
+                }
+            }
+        }
+        .sheet(isPresented: $showDeleteBranchSheet) {
+            DeleteBranchSheet(repo: repo) { branch, deleteRemote in
+                onDeleteBranch(repo, branch, deleteRemote)
+            }
         }
     }
 

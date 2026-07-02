@@ -16,6 +16,30 @@ struct GitRepo: Identifiable, Hashable {
     var aheadCount: Int?
     var behindCount: Int?
     var changedFilesCount: Int?
+    // An in-progress git operation (rebase/merge/cherry-pick/…) left mid-flight,
+    // detected from marker files under `.git`. nil when the repo is in a normal state.
+    var inProgressOperation: InProgressOperation?
+
+    // A git operation that is paused mid-flight (typically waiting on conflict
+    // resolution). The raw value is the human-facing label; `gitCommand` is the
+    // subcommand used to --continue / --abort it.
+    enum InProgressOperation: String, Equatable {
+        case merge = "Merging"
+        case rebase = "Rebasing"
+        case cherryPick = "Cherry-picking"
+        case revert = "Reverting"
+        case applyMailbox = "Applying patch"
+
+        var gitCommand: String {
+            switch self {
+            case .merge: return "merge"
+            case .rebase: return "rebase"
+            case .cherryPick: return "cherry-pick"
+            case .revert: return "revert"
+            case .applyMailbox: return "am"
+            }
+        }
+    }
 
     enum RepoStatus: Equatable {
         case clean

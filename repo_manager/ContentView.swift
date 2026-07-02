@@ -230,6 +230,21 @@ extension TabContentView {
                         },
                         onSwitchBranch: { targetRepo, name, stashChanges in
                             Task { await viewModel.switchBranch(for: targetRepo, name: name, stashChanges: stashChanges) }
+                        },
+                        onMerge: { targetRepo, branch in
+                            Task { await viewModel.merge(for: targetRepo, branch: branch) }
+                        },
+                        onRebase: { targetRepo, branch in
+                            Task { await viewModel.rebase(for: targetRepo, onto: branch) }
+                        },
+                        onContinueInProgress: { targetRepo in
+                            Task { await viewModel.continueInProgress(for: targetRepo) }
+                        },
+                        onAbortInProgress: { targetRepo in
+                            Task { await viewModel.abortInProgress(for: targetRepo) }
+                        },
+                        onDeleteBranch: { targetRepo, branch, deleteRemote in
+                            Task { await viewModel.deleteBranch(for: targetRepo, name: branch, deleteRemote: deleteRemote) }
                         }
                     )
                 }

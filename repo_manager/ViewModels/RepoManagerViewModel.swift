@@ -431,6 +431,53 @@ class RepoManagerViewModel {
         await refreshAllRepositoryStatuses()
     }
 
+    // Delete a branch in a single repository, optionally its remote counterpart too
+    @MainActor
+    func deleteBranch(for repo: GitRepo, name: String, deleteRemote: Bool) async {
+        await performOperation(on: [repo], operation: .deleteBranch) { repo in
+            try await self.gitService.deleteBranch(at: repo.url, name: name, deleteRemote: deleteRemote)
+        }
+        await refreshAllRepositoryStatuses()
+    }
+
+    // Merge a branch into the current branch of a single repository
+    @MainActor
+    func merge(for repo: GitRepo, branch: String) async {
+        await performOperation(on: [repo], operation: .merge) { repo in
+            try await self.gitService.merge(at: repo.url, branch: branch)
+        }
+        await refreshAllRepositoryStatuses()
+    }
+
+    // Rebase the current branch of a single repository onto another branch
+    @MainActor
+    func rebase(for repo: GitRepo, onto branch: String) async {
+        await performOperation(on: [repo], operation: .rebase) { repo in
+            try await self.gitService.rebase(at: repo.url, onto: branch)
+        }
+        await refreshAllRepositoryStatuses()
+    }
+
+    // Continue an in-progress merge/rebase/cherry-pick after conflicts are resolved
+    @MainActor
+    func continueInProgress(for repo: GitRepo) async {
+        guard let operation = repo.inProgressOperation else { return }
+        await performOperation(on: [repo], operation: .continueOperation) { repo in
+            try await self.gitService.continueInProgress(at: repo.url, operation: operation)
+        }
+        await refreshAllRepositoryStatuses()
+    }
+
+    // Abort an in-progress merge/rebase/cherry-pick
+    @MainActor
+    func abortInProgress(for repo: GitRepo) async {
+        guard let operation = repo.inProgressOperation else { return }
+        await performOperation(on: [repo], operation: .abortOperation) { repo in
+            try await self.gitService.abortInProgress(at: repo.url, operation: operation)
+        }
+        await refreshAllRepositoryStatuses()
+    }
+
     // Hard reset selected repositories
     @MainActor
     func hardResetSelected() async {
