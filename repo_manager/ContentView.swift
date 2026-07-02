@@ -107,9 +107,9 @@ struct TabContentView: View {
         VStack(spacing: 0) {
             // Main content
             Group {
-                if viewModel.isScanning {
+                if viewModel.isScanning && viewModel.repoViewModels.isEmpty {
                     loadingView
-                } else if viewModel.repositories.isEmpty {
+                } else if viewModel.repoViewModels.isEmpty {
                     emptyStateView
                 } else {
                     repositoryListView
@@ -206,16 +206,10 @@ extension TabContentView {
     private var repositoryListView: some View {
         ScrollView {
             LazyVStack(spacing: 1) {
-                ForEach(viewModel.repositories) { repo in
+                ForEach(viewModel.repoViewModels) { vm in
                     RepoRowView(
-                        repo: repo,
-                        isSelected: viewModel.selectedRepoIDs.contains(repo.id),
-                        isOperating: viewModel.operatingRepoIDs.contains(repo.id),
-                        xcodeProjects: viewModel.xcodeProjects(for: repo),
-                        isPerformingOperation: viewModel.isPerformingOperation,
-                        onToggle: {
-                            viewModel.toggleSelection(for: repo)
-                        },
+                        vm: vm,
+                        xcodeProjects: viewModel.xcodeProjects(for: vm.repo),
                         onAddDependencies: { project in
                             Task { await viewModel.addLocalDependencies(to: project) }
                         },
@@ -224,27 +218,6 @@ extension TabContentView {
                         },
                         onToggleRunScripts: { project in
                             Task { await viewModel.toggleRunScripts(for: project) }
-                        },
-                        onCreateBranch: { targetRepo, name, stashChanges in
-                            Task { await viewModel.createBranch(for: targetRepo, name: name, stashChanges: stashChanges) }
-                        },
-                        onSwitchBranch: { targetRepo, name, stashChanges in
-                            Task { await viewModel.switchBranch(for: targetRepo, name: name, stashChanges: stashChanges) }
-                        },
-                        onMerge: { targetRepo, branch in
-                            Task { await viewModel.merge(for: targetRepo, branch: branch) }
-                        },
-                        onRebase: { targetRepo, branch in
-                            Task { await viewModel.rebase(for: targetRepo, onto: branch) }
-                        },
-                        onContinueInProgress: { targetRepo in
-                            Task { await viewModel.continueInProgress(for: targetRepo) }
-                        },
-                        onAbortInProgress: { targetRepo in
-                            Task { await viewModel.abortInProgress(for: targetRepo) }
-                        },
-                        onDeleteBranch: { targetRepo, branch, deleteRemote in
-                            Task { await viewModel.deleteBranch(for: targetRepo, name: branch, deleteRemote: deleteRemote) }
                         }
                     )
                 }
@@ -265,12 +238,12 @@ extension TabContentView {
                 get: { viewModel.allSelected },
                 set: { _ in viewModel.toggleSelectAll() }
             )) {
-                Text("\(viewModel.selectedCount) of \(viewModel.repositories.count) selected")
+                Text("\(viewModel.selectedCount) of \(viewModel.repoViewModels.count) selected")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .toggleStyle(.checkbox)
-            .disabled(viewModel.repositories.isEmpty || viewModel.hasLoadingRepos)
+            .disabled(viewModel.repoViewModels.isEmpty || viewModel.hasLoadingRepos)
 
             Spacer()
 

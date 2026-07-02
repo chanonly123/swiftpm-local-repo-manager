@@ -1,33 +1,27 @@
 import SwiftUI
 
 struct RepoRowView: View {
-    let repo: GitRepo
-    let isSelected: Bool
-    let isOperating: Bool
+    // The single source of truth for this repo — shared with its sheets and diff window.
+    let vm: RepoViewModel
     let xcodeProjects: [XcodeProject]
-    let isPerformingOperation: Bool
-    let onToggle: () -> Void
+    // Xcode tasks stay coordinator concerns (they touch the project files + repo list).
     var onAddDependencies: (XcodeProject) -> Void = { _ in }
     var onRemoveDependencies: (XcodeProject) -> Void = { _ in }
     var onToggleRunScripts: (XcodeProject) -> Void = { _ in }
-    var onCreateBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
-    var onSwitchBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
-    var onMerge: (GitRepo, String) -> Void = { _, _ in }
-    var onRebase: (GitRepo, String) -> Void = { _, _ in }
-    var onContinueInProgress: (GitRepo) -> Void = { _ in }
-    var onAbortInProgress: (GitRepo) -> Void = { _ in }
-    var onDeleteBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
 
     @State private var showNewBranchSheet = false
     @State private var showDeleteBranchSheet = false
     @State private var branchActionMode: MergeRebaseSheet.Mode?
 
+    // Convenience — the live repo data.
+    private var repo: GitRepo { vm.repo }
+
     var body: some View {
         HStack(spacing: 10) {
             // Selection checkbox
-            Button(action: onToggle) {
-                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(isSelected ? .blue : .secondary)
+            Button(action: { vm.isSelected.toggle() }) {
+                Image(systemName: vm.isSelected ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(vm.isSelected ? .blue : .secondary)
                     .font(.system(size: 16))
             }
             .buttonStyle(.plain)
@@ -44,7 +38,7 @@ struct RepoRowView: View {
             Color.clear
                 .frame(width: 20, height: 20)
                 .overlay {
-                    if isOperating {
+                    if vm.isOperating {
                         ProgressView()
                             .scaleEffect(0.4)
                     }
@@ -110,6 +104,14 @@ struct RepoRowView: View {
                 .help("\(operation.rawValue) in progress — use the git menu to continue or abort")
             }
 
+            // Last operation error (single-repo ops) — hover for details
+            if let error = vm.lastOperationError {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .help(error)
+            }
+
             Spacer()
 
             // Xcode tasks menu (only when this repo contains Xcode projects)
@@ -133,7 +135,7 @@ struct RepoRowView: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Xcode Tasks")
-                .disabled(isPerformingOperation)
+                .disabled(vm.isOperating)
             }
 
             // Terminal button
@@ -151,10 +153,10 @@ struct RepoRowView: View {
             Menu {
                 if let operation = repo.inProgressOperation {
                     Section("\(operation.rawValue) in progress") {
-                        Button(action: { onContinueInProgress(repo) }) {
+                        Button(action: { Task { await vm.continueInProgress() } }) {
                             Label("Continue \(operation.rawValue)", systemImage: "arrow.right.circle")
                         }
-                        Button(role: .destructive, action: { onAbortInProgress(repo) }) {
+                        Button(role: .destructive, action: { Task { await vm.abortInProgress() } }) {
                             Label("Abort \(operation.rawValue)", systemImage: "xmark.circle")
                         }
                     }
@@ -183,11 +185,11 @@ struct RepoRowView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help(repo.inProgressOperation != nil ? "\(repo.inProgressOperation!.rawValue) in progress — Git Operations" : "Git Operations (Merge / Rebase)")
-            .disabled(repo.status == .loading || isPerformingOperation)
+            .disabled(repo.status == .loading || vm.isOperating)
 
             // Diff / History button
             Button(action: {
-                DiffWindowManager.open(for: repo)
+                DiffWindowManager.open(for: vm)
             }) {
                 Image(systemName: "arrow.left.arrow.right")
                     .font(.system(size: 14))
@@ -212,30 +214,19 @@ struct RepoRowView: View {
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
         .background(
-            isOperating ? Color.orange.opacity(0.08) :
-                isSelected ? Color.blue.opacity(0.08) : Color.clear
+            vm.isOperating ? Color.orange.opacity(0.08) :
+                vm.isSelected ? Color.blue.opacity(0.08) : Color.clear
         )
         .cornerRadius(4)
-        .opacity(isOperating ? 0.8 : 1.0)
+        .opacity(vm.isOperating ? 0.8 : 1.0)
         .sheet(isPresented: $showNewBranchSheet) {
-            NewBranchSheet(
-                repo: repo,
-                onSwitch: { name, stashChanges in onSwitchBranch(repo, name, stashChanges) },
-                onCreate: { name, stashChanges in onCreateBranch(repo, name, stashChanges) }
-            )
+            NewBranchSheet(vm: vm)
         }
         .sheet(item: $branchActionMode) { mode in
-            MergeRebaseSheet(repo: repo, mode: mode) { branch in
-                switch mode {
-                case .merge: onMerge(repo, branch)
-                case .rebase: onRebase(repo, branch)
-                }
-            }
+            MergeRebaseSheet(vm: vm, mode: mode)
         }
         .sheet(isPresented: $showDeleteBranchSheet) {
-            DeleteBranchSheet(repo: repo) { branch, deleteRemote in
-                onDeleteBranch(repo, branch, deleteRemote)
-            }
+            DeleteBranchSheet(vm: vm)
         }
     }
 

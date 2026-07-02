@@ -3,9 +3,9 @@ import SwiftUI
 // MARK: - Branch switch / create sheet
 
 struct NewBranchSheet: View {
-    let repo: GitRepo
-    let onSwitch: (String, Bool) -> Void   // (branch name, stash changes)
-    let onCreate: (String, Bool) -> Void   // (branch name, stash changes)
+    let vm: RepoViewModel
+
+    private var repo: GitRepo { vm.repo }
 
     @Environment(\.dismiss) private var dismiss
     @State private var branchName = ""
@@ -164,10 +164,11 @@ struct NewBranchSheet: View {
     private func submit() {
         guard !trimmedName.isEmpty else { return }
         let stash = changeHandling == .stash
+        let name = trimmedName
         if matchesExistingBranch {
-            onSwitch(trimmedName, stash)
+            Task { await vm.switchBranch(name: name, stashChanges: stash) }
         } else {
-            onCreate(trimmedName, stash)
+            Task { await vm.createBranch(name: name, stashChanges: stash) }
         }
         dismiss()
     }

@@ -11,7 +11,8 @@ enum DiffWindowManager {
     private static let sizeDefaultsKey = "DiffWindowContentSize"
     private static let defaultSize = NSSize(width: 900, height: 600)
 
-    static func open(for repo: GitRepo) {
+    static func open(for vm: RepoViewModel) {
+        let repo = vm.repo
         let key = repo.url.path
 
         if let existing = windows[key], existing.isVisible {
@@ -22,7 +23,7 @@ enum DiffWindowManager {
         // Reopening a previously closed window for this repo — drop stale observers.
         removeObservers(forKey: key)
 
-        let controller = NSHostingController(rootView: DiffWindowView(repo: repo))
+        let controller = NSHostingController(rootView: DiffWindowView(vm: vm))
         let window = NSWindow(contentViewController: controller)
         window.title = "Diff - \(repo.url.lastPathComponent)"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -58,8 +59,8 @@ enum DiffWindowManager {
         observers[key] = [resizeToken, closeToken]
     }
 
-    static func close(for repo: GitRepo) {
-        let key = repo.url.path
+    static func close(for vm: RepoViewModel) {
+        let key = vm.repo.url.path
         windows[key]?.close()
         windows.removeValue(forKey: key)
         removeObservers(forKey: key)

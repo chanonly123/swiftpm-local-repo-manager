@@ -23,9 +23,10 @@ struct MergeRebaseSheet: View {
         }
     }
 
-    let repo: GitRepo
+    let vm: RepoViewModel
     let mode: Mode
-    let onConfirm: (String) -> Void
+
+    private var repo: GitRepo { vm.repo }
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -171,7 +172,10 @@ struct MergeRebaseSheet: View {
 
     private func submit() {
         guard let branch = selectedBranch else { return }
-        onConfirm(branch)
+        switch mode {
+        case .merge: Task { await vm.merge(branch: branch) }
+        case .rebase: Task { await vm.rebase(onto: branch) }
+        }
         dismiss()
     }
 }

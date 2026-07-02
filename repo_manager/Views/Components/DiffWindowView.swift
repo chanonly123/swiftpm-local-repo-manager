@@ -2,7 +2,11 @@ import SwiftUI
 import AppKit
 
 struct DiffWindowView: View {
-    let repo: GitRepo
+    // Shared with the row/sheets — the single source of truth for this repo. The window
+    // observes it directly (no NotificationCenter) and refreshes it after its own commits.
+    let vm: RepoViewModel
+
+    private var repo: GitRepo { vm.repo }
 
     @State private var files: [FileEntry] = []
     @State private var selectedPath: String?
@@ -69,8 +73,9 @@ struct DiffWindowView: View {
             selectedCommits = []
             Task { await loadStashDiff(ref: ref) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .repoFilesDidChange)) { note in
-            guard (note.object as? URL) == repo.url else { return }
+        // The shared VM bumps changeToken on any refresh (FSEvents, app-active, our own ops),
+        // so we reload the window's lists in lockstep — no NotificationCenter needed.
+        .onChange(of: vm.changeToken) {
             Task {
                 await loadFiles()
                 await refreshCommits()
@@ -552,8 +557,8 @@ struct DiffWindowView: View {
         do {
             try await git.stageFiles(at: repo.url, paths: paths)
             _ = try await git.commitStaged(at: repo.url, message: message)
-            NotificationCenter.default.post(name: .repoDidCommit, object: repo.url)
-            DiffWindowManager.close(for: repo)
+            await vm.refresh()
+            DiffWindowManager.close(for: vm)
         } catch {
             commitError = error.localizedDescription
         }
@@ -563,6 +568,7 @@ struct DiffWindowView: View {
         do {
             try await git.discardFileChanges(at: repo.url, filePath: entry.path, status: entry.status)
             if selectedPath == entry.id { selectedPath = nil; diffLines = [] }
+            await vm.refresh()
             await loadFiles()
         } catch {
             print("[ERROR] DiffWindowView discardFile: \(error)")
@@ -706,8 +712,8 @@ struct DiffWindowView: View {
     private func resetToCommit(_ commit: CommitEntry, hard: Bool) async {
         do {
             _ = try await git.resetToCommit(at: repo.url, hash: commit.id, hard: hard)
-            // Refreshes the repo list (branch position + status) and, in turn, this window
-            NotificationCenter.default.post(name: .repoDidCommit, object: repo.url)
+            // Refresh the shared VM so the row (branch position + status) updates too.
+            await vm.refresh()
             await loadFiles()
             await refreshCommits()
         } catch {
@@ -722,7 +728,7 @@ struct DiffWindowView: View {
         do {
             _ = try await git.squashCommits(at: repo.url, count: count, message: trimmed)
             selectedCommits = []
-            NotificationCenter.default.post(name: .repoDidCommit, object: repo.url)
+            await vm.refresh()
             await loadFiles()
             await refreshCommits()
         } catch {
@@ -737,7 +743,7 @@ struct DiffWindowView: View {
             } else {
                 _ = try await git.applyStash(at: repo.url, ref: stash.id)
             }
-            NotificationCenter.default.post(name: .repoDidCommit, object: repo.url)
+            await vm.refresh()
             await loadFiles()
             await loadStashes()
         } catch {

@@ -6,8 +6,9 @@ import SwiftUI
 // list, but never offers the current branch (git won't delete a checked-out branch)
 // and adds an optional toggle to also delete the branch on origin.
 struct DeleteBranchSheet: View {
-    let repo: GitRepo
-    let onDelete: (String, Bool) -> Void   // (branch name, also delete remote)
+    let vm: RepoViewModel
+
+    private var repo: GitRepo { vm.repo }
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -156,7 +157,8 @@ struct DeleteBranchSheet: View {
 
     private func submit() {
         guard let branch = selectedBranch else { return }
-        onDelete(branch, deleteRemote)
+        let remote = deleteRemote
+        Task { await vm.deleteBranch(name: branch, deleteRemote: remote) }
         dismiss()
     }
 }
