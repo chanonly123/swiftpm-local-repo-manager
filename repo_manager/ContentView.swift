@@ -246,7 +246,7 @@ extension TabContentView {
                     .foregroundStyle(.secondary)
             }
             .toggleStyle(.checkbox)
-            .disabled(viewModel.repoViewModels.isEmpty || viewModel.hasLoadingRepos)
+            .disabled(viewModel.repoViewModels.isEmpty)
 
             Spacer()
 
@@ -458,8 +458,7 @@ extension TabContentView {
 
     // Filterable list of branches (local + remote) across the selected repos
     private var recheckoutBranchSuggestions: [String] {
-        let query = viewModel.customBranchInput.trimmingCharacters(in: .whitespaces).lowercased()
-        return viewModel.recheckoutBranches.filter { query.isEmpty || $0.lowercased().contains(query) }
+        BranchSearch.ranked(viewModel.recheckoutBranches, query: viewModel.customBranchInput)
     }
 
     @ViewBuilder

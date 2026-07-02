@@ -289,6 +289,21 @@ actor GitService {
         try await runGitCommand(args: ["commit", "-m", message], at: repoURL)
     }
 
+    // The effective commit identity for this repo (repo-local override, else global config).
+    // Either field is empty when unset — `git config` exits non-zero in that case.
+    nonisolated func getUserIdentity(at repoURL: URL) async -> (name: String, email: String) {
+        func value(_ key: String) async -> String {
+            let output = try? await runGitCommand(
+                args: ["config", key],
+                at: repoURL,
+                logErrors: false,
+                allowNonZeroExit: true
+            )
+            return output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        return await (name: value("user.name"), email: value("user.email"))
+    }
+
     // Diff for a tracked file vs HEAD (staged + unstaged)
     nonisolated func getDiff(at repoURL: URL, filePath: String) async throws -> String {
         try await runGitCommand(args: ["diff", "HEAD", "--", filePath], at: repoURL)

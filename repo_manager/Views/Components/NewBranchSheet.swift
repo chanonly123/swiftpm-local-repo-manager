@@ -28,22 +28,12 @@ struct NewBranchSheet: View {
 
     private let suggestionLimit = 50
 
-    // All branches matching what the user is typing (excluding the current one), sorted —
-    // matches starting with the query rank first, then alphabetical.
+    // Branches matching what the user is typing, excluding the current branch and the exact
+    // typed name (that one is handled by the Switch button, not shown as a suggestion).
     private var allMatches: [String] {
-        let query = trimmedName.lowercased()
-        return branches
-            .filter { branch in
-                branch != repo.currentBranch &&
-                (query.isEmpty || branch.lowercased().contains(query)) &&
-                branch != trimmedName
-            }
-            .sorted { a, b in
-                let ap = a.lowercased().hasPrefix(query)
-                let bp = b.lowercased().hasPrefix(query)
-                if ap != bp { return ap }
-                return a.localizedStandardCompare(b) == .orderedAscending
-            }
+        var excluded: Set<String> = [trimmedName]
+        if let current = repo.currentBranch { excluded.insert(current) }
+        return BranchSearch.ranked(branches, query: trimmedName, excluding: excluded)
     }
 
     // Capped list actually rendered, to stay responsive with very many branches

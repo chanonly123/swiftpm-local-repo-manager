@@ -25,15 +25,7 @@ struct DeleteBranchSheet: View {
     // Existing branches other than the current one (a checked-out branch can't be deleted),
     // ranked: prefix matches first, then alphabetical.
     private var allMatches: [String] {
-        let q = trimmedQuery.lowercased()
-        return branches
-            .filter { $0 != repo.currentBranch && (q.isEmpty || $0.lowercased().contains(q)) }
-            .sorted { a, b in
-                let ap = a.lowercased().hasPrefix(q)
-                let bp = b.lowercased().hasPrefix(q)
-                if ap != bp { return ap }
-                return a.localizedStandardCompare(b) == .orderedAscending
-            }
+        BranchSearch.ranked(branches, query: trimmedQuery, excluding: repo.currentBranch.map { [$0] } ?? [])
     }
 
     private var suggestions: [String] { Array(allMatches.prefix(suggestionLimit)) }

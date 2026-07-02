@@ -19,6 +19,7 @@ struct DiffWindowView: View {
     @State private var commitMessage = ""
     @State private var isCommitting = false
     @State private var commitError: String?
+    @State private var gitIdentity: (name: String, email: String) = ("", "")
 
     @State private var commits: [CommitEntry] = []
     @State private var selectedCommits: Set<String> = []
@@ -33,6 +34,7 @@ struct DiffWindowView: View {
     @State private var loadingStashes = true
     @State private var resetTargetCommit: CommitEntry?
     @State private var branchActionMode: MergeRebaseSheet.Mode?
+    @State private var showingForcePushConfirm = false
     // The hosting NSWindow, captured so we can keep its (non-SwiftUI) title in sync.
     @State private var hostWindow: NSWindow?
 
@@ -61,6 +63,7 @@ struct DiffWindowView: View {
             hostWindow?.title = DiffWindowManager.title(for: repo)
         }
         .task {
+            gitIdentity = await git.getUserIdentity(at: repo.url)
             await loadFiles()
             await loadCommits(reset: true)
             await loadStashes()
@@ -130,6 +133,25 @@ struct DiffWindowView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                Menu {
+                    Button(action: { Task { await vm.push() } }) {
+                        Label("Push", systemImage: "arrow.up")
+                    }
+                    Divider()
+                    Button(role: .destructive, action: { showingForcePushConfirm = true }) {
+                        Label("Force Push…", systemImage: "exclamationmark.triangle")
+                    }
+                } label: {
+                    Label(pushLabel, systemImage: "arrow.up")
+                } primaryAction: {
+                    Task { await vm.push() }
+                }
+                .menuStyle(.button)
+                .fixedSize()
+                .controlSize(.small)
+                .disabled(vm.isOperating)
+                .help("Push \(branch) to origin")
             }
 
             if let operation = repo.inProgressOperation {
@@ -159,13 +181,13 @@ struct DiffWindowView: View {
             Spacer()
 
             Button(action: { branchActionMode = .merge }) {
-                Label("Merge…", systemImage: "arrow.triangle.merge")
+                Label("Merge", systemImage: "arrow.triangle.merge")
             }
             .controlSize(.small)
             .disabled(vm.isOperating)
 
             Button(action: { branchActionMode = .rebase }) {
-                Label("Rebase…", systemImage: "arrow.triangle.pull")
+                Label("Rebase", systemImage: "arrow.triangle.pull")
             }
             .controlSize(.small)
             .disabled(vm.isOperating)
@@ -173,6 +195,18 @@ struct DiffWindowView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(Color(nsColor: .controlBackgroundColor))
+        .alert("Force Push?", isPresented: $showingForcePushConfirm) {
+            Button("Cancel", role: .cancel) { }
+            Button("Force Push", role: .destructive) { Task { await vm.forcePush() } }
+        } message: {
+            Text("This force-pushes \(repo.currentBranch ?? "the current branch") to origin with --force-with-lease.\n\nIt can overwrite remote history.")
+        }
+    }
+
+    // "Push" plus the ahead count when the branch is ahead of its upstream.
+    private var pushLabel: String {
+        if let ahead = repo.aheadCount, ahead > 0 { return "Push \(ahead)" }
+        return "Push"
     }
 
     // Number of commits to squash, but only when the selection is the top N
@@ -226,7 +260,7 @@ struct DiffWindowView: View {
         VStack(spacing: 0) {
             changedFilesHeader
             Divider()
-            if loadingFiles {
+            if !files.isEmpty && loadingFiles {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if files.isEmpty {
                 Text("No changes")
@@ -463,6 +497,17 @@ struct DiffWindowView: View {
         files.contains { $0.status.contains("U") || ($0.status.first == "A" && $0.status.last == "A") || ($0.status.first == "D" && $0.status.last == "D") }
     }
 
+    // "Name <email>", or just whichever is set — nil when neither is configured.
+    private var gitIdentityText: String? {
+        let name = gitIdentity.name, email = gitIdentity.email
+        switch (name.isEmpty, email.isEmpty) {
+        case (false, false): return "\(name) <\(email)>"
+        case (false, true): return name
+        case (true, false): return "<\(email)>"
+        case (true, true): return nil
+        }
+    }
+
     private var commitPanel: some View {
         VStack(spacing: 6) {
             if hasConflicts {
@@ -489,6 +534,19 @@ struct DiffWindowView: View {
                                 .allowsHitTesting(false)
                         }
                     }
+
+                // The identity this commit will be authored with (repo-local, else global).
+                HStack(spacing: 4) {
+                    Image(systemName: gitIdentityText == nil ? "person.crop.circle.badge.exclamationmark" : "person.crop.circle")
+                        .font(.system(size: 10))
+                    Text(gitIdentityText ?? "No git identity configured (git config user.name / user.email)")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(gitIdentityText == nil ? .orange : .secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(gitIdentityText ?? "This repo has no user.name / user.email configured")
 
                 if let error = commitError {
                     Text(error)
