@@ -62,7 +62,7 @@ struct RepoRowView: View {
                 } else if repo.status == .loading {
                     Text("Loading...")
                 } else {
-                    Text(repo.hasUncommittedChanges ? "Changes" : "Clean")
+                    Text(repo.hasUncommittedChanges ? "Changes" : "")
                 }
                 if repo.hasConflicts {
                     Text("⚠️")
