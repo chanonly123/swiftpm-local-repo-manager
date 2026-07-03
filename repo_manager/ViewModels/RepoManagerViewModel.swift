@@ -3,9 +3,9 @@ import SwiftUI
 
 @Observable
 class RepoManagerViewModel {
-    var repositories: [GitRepo] = []
-    var selectedRepoIDs: Set<UUID> = []
-    var operatingRepoIDs: Set<UUID> = []
+    // One RepoViewModel per discovered repo — each is the single source of truth for its repo
+    // and is shared by reference into the row / sheets / diff window.
+    var repoViewModels: [RepoViewModel] = []
     var isScanning = false
     var isPerformingOperation = false
     var currentDirectory: URL?
@@ -26,21 +26,34 @@ class RepoManagerViewModel {
     private let repoService = RepoService()
     private let fsEventsMonitor = FSEventsMonitor()
     private var appObservers: [NSObjectProtocol] = []
+    // Session cache: reuse the same RepoViewModel for a path across re-scans/refreshes so
+    // cached data shows immediately (no loading flash) and refresh happens silently behind it.
+    private var repoCache: [URL: RepoViewModel] = [:]
 
-    var selectedCount: Int {
-        selectedRepoIDs.count
+    // All repos as plain data (e.g. for Xcode dependency wiring).
+    var repositories: [GitRepo] {
+        repoViewModels.map(\.repo)
     }
 
-    var hasSelection: Bool {
-        !selectedRepoIDs.isEmpty
+    // Selection is derived from the per-repo VMs (the source of truth).
+    var selectedRepositoryVMs: [RepoViewModel] {
+        repoViewModels.filter(\.isSelected)
     }
 
     var selectedRepositories: [GitRepo] {
-        repositories.filter { selectedRepoIDs.contains($0.id) }
+        selectedRepositoryVMs.map(\.repo)
+    }
+
+    var selectedCount: Int {
+        selectedRepositoryVMs.count
+    }
+
+    var hasSelection: Bool {
+        repoViewModels.contains(where: \.isSelected)
     }
 
     var hasLoadingRepos: Bool {
-        repositories.contains { $0.status == .loading }
+        repoViewModels.contains { $0.repo.status == .loading }
     }
 
     // Xcode projects located inside a specific repository
@@ -67,14 +80,6 @@ class RepoManagerViewModel {
                 await self?.refreshAllRepositoryStatuses()
             }
         })
-        appObservers.append(center.addObserver(
-            forName: .repoDidCommit,
-            object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.refreshAllRepositoryStatuses()
-            }
-        })
     }
 
     deinit {
@@ -85,21 +90,13 @@ class RepoManagerViewModel {
 
     @MainActor
     func refreshAllRepositoryStatuses() async {
-        guard !repositories.isEmpty, !isScanning, !isPerformingOperation else { return }
-        print("[DEBUG] Refreshing all repository statuses after app became active")
-        await withTaskGroup(of: (Int, GitRepo).self) { group in
-            for (index, repo) in repositories.enumerated() {
-                guard !operatingRepoIDs.contains(repo.id) else { continue }
-                group.addTask {
-                    let updated = await self.gitService.getRepoInfo(at: repo.url)
-                    return (index, updated)
-                }
-            }
-            for await (index, updated) in group {
-                repositories[index] = updated
-                // Keep any open diff window for this repo in sync — FSEvents are paused
-                // while the app is in the background, so live changes are only picked up here.
-                NotificationCenter.default.post(name: .repoFilesDidChange, object: updated.url)
+        guard !repoViewModels.isEmpty, !isScanning, !isPerformingOperation else { return }
+        debugLog("[DEBUG] Refreshing all repository statuses")
+        // Each VM refreshes itself silently; any open diff window shares the same VM and
+        // observes the change, so no notification bridge is needed.
+        await withTaskGroup(of: Void.self) { group in
+            for vm in repoViewModels {
+                group.addTask { await vm.refresh() }
             }
         }
     }
@@ -115,19 +112,19 @@ class RepoManagerViewModel {
                              bookmarkDataIsStale: &isStale)
 
             if isStale {
-                print("[DEBUG] Bookmark is stale, will need to re-select directory")
+                debugLog("[DEBUG] Bookmark is stale, will need to re-select directory")
             }
 
             // Start accessing the security-scoped resource
             if url.startAccessingSecurityScopedResource() {
                 currentDirectory = url
-                print("[DEBUG] Loaded directory from bookmark: \(url.path)")
+                debugLog("[DEBUG] Loaded directory from bookmark: \(url.path)")
                 await scanRepositories()
             } else {
-                print("[ERROR] Failed to access security-scoped resource")
+                debugLog("[ERROR] Failed to access security-scoped resource")
             }
         } catch {
-            print("[ERROR] Failed to resolve bookmark: \(error.localizedDescription)")
+            debugLog("[ERROR] Failed to resolve bookmark: \(error.localizedDescription)")
         }
     }
 
@@ -141,7 +138,7 @@ class RepoManagerViewModel {
                                                    relativeTo: nil)
             return bookmarkData
         } catch {
-            print("[ERROR] Failed to create bookmark: \(error.localizedDescription)")
+            debugLog("[ERROR] Failed to create bookmark: \(error.localizedDescription)")
             return nil
         }
     }
@@ -154,9 +151,9 @@ class RepoManagerViewModel {
         // Start accessing new directory
         if url.startAccessingSecurityScopedResource() {
             currentDirectory = url
-            print("[DEBUG] Set directory: \(url.path)")
+            debugLog("[DEBUG] Set directory: \(url.path)")
         } else {
-            print("[ERROR] Failed to access security-scoped resource for: \(url.path)")
+            debugLog("[ERROR] Failed to access security-scoped resource for: \(url.path)")
             currentDirectory = url
         }
     }
@@ -199,67 +196,66 @@ class RepoManagerViewModel {
     func scanRepositories() async {
         guard let directory = currentDirectory else { return }
 
-        print("[DEBUG] Scanning directory: \(directory.path)")
+        debugLog("[DEBUG] Scanning directory: \(directory.path)")
 
         // Stop monitoring previous repositories
         fsEventsMonitor.stopMonitoring()
 
-        isScanning = true
+        // Only show the full-screen scanning state on a cold scan (nothing displayed yet).
+        // A re-scan keeps the existing rows visible and updates them in place.
+        isScanning = repoViewModels.isEmpty
         errorMessage = nil
-        repositories = []
-        selectedRepoIDs.removeAll()
-        xcodeProjects = []
 
         do {
             // Scan for git repositories
             let repoURLs = try await gitService.scanForRepositories(at: directory)
-            print("[DEBUG] Found \(repoURLs.count) git repositories")
+            debugLog("[DEBUG] Found \(repoURLs.count) git repositories")
 
             // Scan for Xcode projects
             let projects = try await repoService.findXcodeProjects(in: directory)
             xcodeProjects = projects
-            print("[DEBUG] Found \(projects.count) Xcode projects")
+            debugLog("[DEBUG] Found \(projects.count) Xcode projects")
 
-            // Create basic repo objects immediately and show them
-            let basicRepos = repoURLs.map { url in
-                GitRepo(
-                    name: url.lastPathComponent,
-                    url: url,
-                    currentBranch: nil,
-                    status: .loading,
-                    hasUncommittedChanges: false
+            // Build the list, reusing cached VMs so their data (and selection) persist across
+            // scans. Genuinely new repos start in .loading until their first refresh lands.
+            let vms: [RepoViewModel] = repoURLs.map { url in
+                if let cached = repoCache[url] { return cached }
+                let vm = RepoViewModel(
+                    repo: GitRepo(
+                        name: url.lastPathComponent,
+                        url: url,
+                        currentBranch: nil,
+                        status: .loading,
+                        hasUncommittedChanges: false
+                    ),
+                    gitService: gitService
                 )
+                repoCache[url] = vm
+                return vm
             }
-            self.repositories = basicRepos.sorted { $0.name < $1.name }
+            self.repoViewModels = vms.sorted { $0.repo.name < $1.repo.name }
             isScanning = false
-
-            // Now fetch detailed info for each repository and update progressively
-            await withTaskGroup(of: (UUID, GitRepo).self) { group in
-                for repo in self.repositories {
-                    // Mark repo as operating
-                    operatingRepoIDs.insert(repo.id)
-
-                    group.addTask {
-                        let detailedRepo = await self.gitService.getRepoInfo(at: repo.url)
-                        return (repo.id, detailedRepo)
-                    }
-                }
-
-                for await (oldId, updatedRepo) in group {
-                    // Find and update the matching repository
-                    if let index = self.repositories.firstIndex(where: { $0.id == oldId }) {
-                        self.repositories[index] = updatedRepo
-                        // Remove from operating set
-                        operatingRepoIDs.remove(oldId)
-                    }
-                }
-            }
-            print("[SUCCESS] Loaded repository information for \(repositories.count) repos")
 
             // Start monitoring all repositories for file system changes
             startMonitoringRepositories()
+
+            // Refresh every repo silently, in its own task rather than awaited inline. On a
+            // cold launch via bookmark restore, awaiting here mutates the VMs during app
+            // startup — before SwiftUI commits its first render of the just-populated list —
+            // so those invalidations are dropped and rows stay stuck on the .loading
+            // placeholder until a forced re-render. Deferring lets the rows render and start
+            // observing first, so the updates propagate normally. (Cached rows keep showing
+            // prior data meanwhile.)
+            Task { @MainActor in
+                await withTaskGroup(of: Void.self) { group in
+                    for vm in self.repoViewModels {
+                        group.addTask { await vm.refresh() }
+                    }
+                }
+                debugLog("[SUCCESS] Loaded repository information for \(self.repoViewModels.count) repos")
+            }
         } catch {
-            print("[ERROR] Failed to scan directory: \(error.localizedDescription)")
+            debugLog("[ERROR] Failed to scan directory: \(error.localizedDescription)")
             errorMessage = "Failed to scan directory: \(error.localizedDescription)"
             isScanning = false
         }
@@ -279,61 +275,31 @@ class RepoManagerViewModel {
     // Handle file system change for a specific repository
     @MainActor
     private func handleFileSystemChange(at repoURL: URL) async {
-        guard let index = repositories.firstIndex(where: { $0.url == repoURL }) else { return }
-        let repo = repositories[index]
-
-        // Skip if already updating this repo to prevent loops
-        guard !operatingRepoIDs.contains(repo.id) else {
-            print("[DEBUG] Skipping file system change for \(repo.name) - already updating")
-            return
-        }
-
-        print("[DEBUG] File system change detected in: \(repo.name)")
-
-        // Mark as operating
-        operatingRepoIDs.insert(repo.id)
-
-        // Fetch updated status
-        let updatedRepo = await gitService.getRepoInfo(at: repo.url)
-
-        // Update the repository
-        repositories[index] = updatedRepo
-
-        // Remove from operating set
-        operatingRepoIDs.remove(repo.id)
-
-        print("[DEBUG] Updated status for \(repo.name): \(updatedRepo.status.displayText)")
-
-        // Notify any open diff window for this repo
-        NotificationCenter.default.post(name: .repoFilesDidChange, object: repoURL)
-    }
-
-    // Toggle repository selection
-    func toggleSelection(for repo: GitRepo) {
-        // Don't allow selection while repo is loading
-        guard repo.status != .loading else { return }
-
-        if selectedRepoIDs.contains(repo.id) {
-            selectedRepoIDs.remove(repo.id)
-        } else {
-            selectedRepoIDs.insert(repo.id)
-        }
+        guard let vm = repoCache[repoURL] else { return }
+        // refresh() no-ops while the repo has an operation in flight, which also prevents
+        // FSEvents feedback loops from our own git commands.
+        debugLog("[DEBUG] File system change detected in: \(vm.repo.name)")
+        await vm.refresh()
     }
 
     // Select all repositories (excluding loading ones)
     func selectAll() {
-        selectedRepoIDs = Set(repositories.filter { $0.status != .loading }.map { $0.id })
+        for vm in repoViewModels where vm.repo.status != .loading {
+            vm.isSelected = true
+        }
     }
 
     // Deselect all repositories
     func deselectAll() {
-        selectedRepoIDs.removeAll()
+        for vm in repoViewModels {
+            vm.isSelected = false
+        }
     }
 
     // True when every selectable (non-loading) repo is selected
     var allSelected: Bool {
-        let selectable = repositories.filter { $0.status != .loading }
-        return !selectable.isEmpty && selectable.allSatisfy { selectedRepoIDs.contains($0.id) }
+        let selectable = repoViewModels.filter { $0.repo.status != .loading }
+        return !selectable.isEmpty && selectable.allSatisfy(\.isSelected)
     }
 
     // Toggle between selecting all and deselecting all
@@ -348,26 +314,19 @@ class RepoManagerViewModel {
     // Pull selected repositories
     @MainActor
     func pullSelected() async {
-        await performOperation(on: selectedRepositories, operation: .pull) { repo in
-            try await self.gitService.pull(at: repo.url)
-        }
+        await performBatch(on: selectedRepositoryVMs) { await $0.pull() }
     }
 
     // Fetch selected repositories
     @MainActor
     func fetchSelected() async {
-        await performOperation(on: selectedRepositories, operation: .fetch) { repo in
-            try await self.gitService.fetch(at: repo.url)
-        }
+        await performBatch(on: selectedRepositoryVMs) { await $0.fetch() }
     }
 
     // Recheckout selected repositories to current branch
     @MainActor
     func recheckoutCurrentBranch() async {
-        await performOperation(on: selectedRepositories, operation: .recheckout) { repo in
-            try await self.gitService.recheckout(at: repo.url)
-        }
-        await refreshAllRepositoryStatuses()
+        await performBatch(on: selectedRepositoryVMs) { await $0.recheckout() }
     }
 
     // Load the union of local + remote branches across the selected repos so the
@@ -389,104 +348,68 @@ class RepoManagerViewModel {
     // Recheckout selected repositories to custom branch
     @MainActor
     func recheckoutToCustomBranch(_ branchName: String) async {
-        await performOperation(on: selectedRepositories, operation: .recheckout) { repo in
-            try await self.gitService.recheckout(at: repo.url, toBranch: branchName)
-        }
-        await refreshAllRepositoryStatuses()
+        await performBatch(on: selectedRepositoryVMs) { await $0.recheckout(toBranch: branchName) }
     }
 
     // Push selected repositories
     @MainActor
     func pushSelected() async {
-        await performOperation(on: selectedRepositories, operation: .push) { repo in
-            try await self.gitService.push(at: repo.url)
-        }
-        await refreshAllRepositoryStatuses()
+        await performBatch(on: selectedRepositoryVMs) { await $0.push() }
     }
 
     // Force-push selected repositories
     @MainActor
     func forcePushSelected() async {
-        await performOperation(on: selectedRepositories, operation: .forcePush) { repo in
-            try await self.gitService.forcePush(at: repo.url)
-        }
-        await refreshAllRepositoryStatuses()
-    }
-
-    // Create a new branch in a single repository
-    @MainActor
-    func createBranch(for repo: GitRepo, name: String, stashChanges: Bool) async {
-        await performOperation(on: [repo], operation: .createBranch) { repo in
-            try await self.gitService.createBranch(at: repo.url, name: name, stashChanges: stashChanges)
-        }
-        await refreshAllRepositoryStatuses()
-    }
-
-    // Switch a single repository to an existing branch
-    @MainActor
-    func switchBranch(for repo: GitRepo, name: String, stashChanges: Bool) async {
-        await performOperation(on: [repo], operation: .switchBranch) { repo in
-            try await self.gitService.switchBranch(at: repo.url, name: name, stashChanges: stashChanges)
-        }
-        await refreshAllRepositoryStatuses()
+        await performBatch(on: selectedRepositoryVMs) { await $0.forcePush() }
     }
 
     // Hard reset selected repositories
     @MainActor
     func hardResetSelected() async {
-        await performOperation(on: selectedRepositories, operation: .hardReset) { repo in
-            try await self.gitService.hardReset(at: repo.url)
-        }
+        await performBatch(on: selectedRepositoryVMs) { await $0.hardReset() }
     }
 
-    // Generic operation performer with configurable concurrency limit
-    private func performOperation(
-        on repos: [GitRepo],
-        operation: OperationResult.GitOperation,
-        action: @escaping (GitRepo) async throws -> String
+    // Run a batch git operation over the given repo VMs with a bounded concurrency limit.
+    // Each VM runs its own operation (setting its isOperating flag and reloading itself);
+    // this layer only aggregates the per-repo OperationResults for OperationResultsView and
+    // drains queued work when the user hits Stop.
+    @MainActor
+    private func performBatch(
+        on vms: [RepoViewModel],
+        _ run: @escaping (RepoViewModel) async -> OperationResult
     ) async {
-        guard !repos.isEmpty else { return }
+        guard !vms.isEmpty else { return }
 
         isStopping = false
         isPerformingOperation = true
         operationResults.removeAll()
 
-        // Use a semaphore-like approach to limit concurrent operations
         await withTaskGroup(of: (Int, OperationResult).self) { group in
-            var pendingRepos = Array(repos.enumerated())
+            let pending = Array(vms.enumerated())
             var activeCount = 0
             var nextIndex = 0
 
             // Start initial batch up to maxConcurrentOperations
-            while nextIndex < pendingRepos.count && activeCount < maxConcurrentOperations && !isStopping {
-                let (index, repo) = pendingRepos[nextIndex]
-                group.addTask {
-                    let result = await self.executeOperation(repo: repo, operation: operation, action: action)
-                    return (index, result)
-                }
+            while nextIndex < pending.count && activeCount < maxConcurrentOperations && !isStopping {
+                let (index, vm) = pending[nextIndex]
+                group.addTask { (index, await run(vm)) }
                 activeCount += 1
                 nextIndex += 1
             }
 
-            // Process results and start new tasks as slots become available
+            // Process results and start new tasks as slots free up
             var results: [(Int, OperationResult)] = []
             for await (index, result) in group {
                 results.append((index, result))
                 activeCount -= 1
-
-                // Start next task if available and not stopping
-                if nextIndex < pendingRepos.count && !isStopping {
-                    let (idx, repo) = pendingRepos[nextIndex]
-                    group.addTask {
-                        let result = await self.executeOperation(repo: repo, operation: operation, action: action)
-                        return (idx, result)
-                    }
+                if nextIndex < pending.count && !isStopping {
+                    let (idx, vm) = pending[nextIndex]
+                    group.addTask { (idx, await run(vm)) }
                     activeCount += 1
                     nextIndex += 1
                 }
             }
 
-            // Sort results by original order and extract operation results
             self.operationResults = results.sorted { $0.0 < $1.0 }.map { $0.1 }
         }
 
@@ -495,52 +418,6 @@ class RepoManagerViewModel {
             showingResults = true
         }
         isStopping = false
-    }
-
-    // Execute a single operation on a repository
-    private func executeOperation(
-        repo: GitRepo,
-        operation: OperationResult.GitOperation,
-        action: @escaping (GitRepo) async throws -> String
-    ) async -> OperationResult {
-        // Mark repo as being operated on
-        await MainActor.run {
-            operatingRepoIDs.insert(repo.id)
-        }
-
-        defer {
-            // Remove from operating set when done
-            Task { @MainActor in
-                operatingRepoIDs.remove(repo.id)
-            }
-        }
-
-        do {
-            print("[DEBUG] Starting \(operation.rawValue) on: \(repo.name) at \(repo.url.path)")
-            let output = try await action(repo)
-            print("[SUCCESS] \(operation.rawValue) completed for: \(repo.name)")
-            return OperationResult(
-                repoName: "\(repo.name) (\(repo.url.path))",
-                operation: operation,
-                success: true,
-                message: output.trimmingCharacters(in: .whitespacesAndNewlines),
-                timestamp: Date()
-            )
-        } catch {
-            print("[ERROR] \(operation.rawValue) failed for: \(repo.name)")
-            print("[ERROR] Path: \(repo.url.path)")
-            print("[ERROR] Message: \(error.localizedDescription)")
-            if let gitError = error as? GitServiceError {
-                print("[ERROR] Git Error Details: \(gitError.errorDescription ?? "Unknown")")
-            }
-            return OperationResult(
-                repoName: "\(repo.name) (\(repo.url.path))",
-                operation: operation,
-                success: false,
-                message: error.localizedDescription,
-                timestamp: Date()
-            )
-        }
     }
 
     // Clear operation results
@@ -566,7 +443,7 @@ class RepoManagerViewModel {
         }
 
         isPerformingOperation = true
-        print("[DEBUG] Adding local dependencies to \(project.name)")
+        debugLog("[DEBUG] Adding local dependencies to \(project.name)")
 
         do {
             let result = try await repoService.addLocalDependencies(
@@ -575,12 +452,12 @@ class RepoManagerViewModel {
                 repositories: repositories
             )
 
-            print("[SUCCESS] Added \(result.success)/\(result.total) module references to \(project.name)")
+            debugLog("[SUCCESS] Added \(result.success)/\(result.total) module references to \(project.name)")
             errorMessage = nil
 
             operationResults = []
         } catch {
-            print("[ERROR] Failed to add local dependencies: \(error.localizedDescription)")
+            debugLog("[ERROR] Failed to add local dependencies: \(error.localizedDescription)")
             errorMessage = "Failed to add dependencies: \(error.localizedDescription)"
         }
 
@@ -591,13 +468,13 @@ class RepoManagerViewModel {
     @MainActor
     func removeLocalDependencies(from project: XcodeProject) async {
         isPerformingOperation = true
-        print("[DEBUG] Removing local dependencies from \(project.name)")
+        debugLog("[DEBUG] Removing local dependencies from \(project.name)")
         do {
             let count = try await repoService.removeLocalDependencies(project: project)
-            print("[SUCCESS] Removed \(count) local dependency references from \(project.name)")
+            debugLog("[SUCCESS] Removed \(count) local dependency references from \(project.name)")
             errorMessage = nil
         } catch {
-            print("[ERROR] Failed to remove local dependencies: \(error.localizedDescription)")
+            debugLog("[ERROR] Failed to remove local dependencies: \(error.localizedDescription)")
             errorMessage = "Failed to remove dependencies: \(error.localizedDescription)"
         }
         isPerformingOperation = false
@@ -607,18 +484,18 @@ class RepoManagerViewModel {
     @MainActor
     func toggleRunScripts(for project: XcodeProject) async {
         isPerformingOperation = true
-        print("[DEBUG] Toggling run scripts in \(project.name)")
+        debugLog("[DEBUG] Toggling run scripts in \(project.name)")
 
         do {
             let result = try await repoService.toggleRunScripts(project: project)
 
             let status = result.enabled ? "Enabled" : "Disabled"
-            print("[SUCCESS] \(status) \(result.count) run script(s)")
+            debugLog("[SUCCESS] \(status) \(result.count) run script(s)")
             errorMessage = nil
 
             operationResults = []
         } catch {
-            print("[ERROR] Failed to toggle run scripts: \(error.localizedDescription)")
+            debugLog("[ERROR] Failed to toggle run scripts: \(error.localizedDescription)")
             errorMessage = "Failed to toggle run scripts: \(error.localizedDescription)"
         }
 

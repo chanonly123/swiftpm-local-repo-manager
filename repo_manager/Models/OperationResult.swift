@@ -19,5 +19,10 @@ struct OperationResult: Identifiable {
         case refresh = "Refresh"
         case createBranch = "Create Branch"
         case switchBranch = "Switch Branch"
+        case deleteBranch = "Delete Branch"
+        case merge = "Merge"
+        case rebase = "Rebase"
+        case continueOperation = "Continue"
+        case abortOperation = "Abort"
     }
 }

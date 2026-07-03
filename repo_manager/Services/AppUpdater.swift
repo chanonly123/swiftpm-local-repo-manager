@@ -81,7 +81,7 @@ enum AppUpdater {
         try process.run()
         process.waitUntilExit()
 
-        print("[DEBUG] Update handed off to \(script.path); quitting app")
+        debugLog("[DEBUG] Update handed off to \(script.path); quitting app")
         NSApp.terminate(nil)
     }
 }

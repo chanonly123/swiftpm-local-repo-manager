@@ -3,14 +3,15 @@ import SwiftUI
 // MARK: - Branch switch / create sheet
 
 struct NewBranchSheet: View {
-    let repo: GitRepo
-    let onSwitch: (String, Bool) -> Void   // (branch name, stash changes)
-    let onCreate: (String, Bool) -> Void   // (branch name, stash changes)
+    @Bindable var vm: RepoViewModel
+
+    private var repo: GitRepo { vm.repo }
 
     @Environment(\.dismiss) private var dismiss
     @State private var branchName = ""
     @State private var changeHandling: ChangeHandling = .bring
     @State private var branches: [String] = []
+    @State private var isFetching = false
 
     private enum ChangeHandling { case bring, stash }
 
@@ -27,22 +28,12 @@ struct NewBranchSheet: View {
 
     private let suggestionLimit = 50
 
-    // All branches matching what the user is typing (excluding the current one), sorted —
-    // matches starting with the query rank first, then alphabetical.
+    // Branches matching what the user is typing, excluding the current branch and the exact
+    // typed name (that one is handled by the Switch button, not shown as a suggestion).
     private var allMatches: [String] {
-        let query = trimmedName.lowercased()
-        return branches
-            .filter { branch in
-                branch != repo.currentBranch &&
-                (query.isEmpty || branch.lowercased().contains(query)) &&
-                branch != trimmedName
-            }
-            .sorted { a, b in
-                let ap = a.lowercased().hasPrefix(query)
-                let bp = b.lowercased().hasPrefix(query)
-                if ap != bp { return ap }
-                return a.localizedStandardCompare(b) == .orderedAscending
-            }
+        var excluded: Set<String> = [trimmedName]
+        if let current = repo.currentBranch { excluded.insert(current) }
+        return BranchSearch.ranked(branches, query: trimmedName, excluding: excluded)
     }
 
     // Capped list actually rendered, to stay responsive with very many branches
@@ -54,12 +45,23 @@ struct NewBranchSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Switch or Create Branch")
-                    .font(.headline)
-                Text(repo.name)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Switch or Create Branch")
+                        .font(.headline)
+                    Text(repo.name)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if isFetching {
+                    HStack(spacing: 4) {
+                        ProgressView().controlSize(.small)
+                        Text("Fetching…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             // Source branch the new branch will be created from / switched away from
@@ -111,6 +113,12 @@ struct NewBranchSheet: View {
         .padding(20)
         .frame(width: 600)
         .task {
+            // Show already-known branches immediately, then fetch in the background so
+            // branches created on the remote since the last fetch show up too.
+            branches = (try? await git.getBranches(at: repo.url)) ?? []
+            isFetching = true
+            _ = try? await git.fetch(at: repo.url)
+            isFetching = false
             branches = (try? await git.getBranches(at: repo.url)) ?? []
         }
     }
@@ -164,10 +172,11 @@ struct NewBranchSheet: View {
     private func submit() {
         guard !trimmedName.isEmpty else { return }
         let stash = changeHandling == .stash
+        let name = trimmedName
         if matchesExistingBranch {
-            onSwitch(trimmedName, stash)
+            Task { await vm.switchBranch(name: name, stashChanges: stash) }
         } else {
-            onCreate(trimmedName, stash)
+            Task { await vm.createBranch(name: name, stashChanges: stash) }
         }
         dismiss()
     }

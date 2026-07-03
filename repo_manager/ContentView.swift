@@ -107,9 +107,9 @@ struct TabContentView: View {
         VStack(spacing: 0) {
             // Main content
             Group {
-                if viewModel.isScanning {
+                if viewModel.isScanning && viewModel.repoViewModels.isEmpty {
                     loadingView
-                } else if viewModel.repositories.isEmpty {
+                } else if viewModel.repoViewModels.isEmpty {
                     emptyStateView
                 } else {
                     repositoryListView
@@ -206,16 +206,13 @@ extension TabContentView {
     private var repositoryListView: some View {
         ScrollView {
             LazyVStack(spacing: 1) {
-                ForEach(viewModel.repositories) { repo in
+                ForEach(viewModel.repoViewModels) { vm in
+                    // Observe each repo's change signal at the list level too, so background
+                    // refreshes are reflected even if the leaf row's own observation doesn't fire.
+                    let _ = vm.changeToken
                     RepoRowView(
-                        repo: repo,
-                        isSelected: viewModel.selectedRepoIDs.contains(repo.id),
-                        isOperating: viewModel.operatingRepoIDs.contains(repo.id),
-                        xcodeProjects: viewModel.xcodeProjects(for: repo),
-                        isPerformingOperation: viewModel.isPerformingOperation,
-                        onToggle: {
-                            viewModel.toggleSelection(for: repo)
-                        },
+                        vm: vm,
+                        xcodeProjects: viewModel.xcodeProjects(for: vm.repo),
                         onAddDependencies: { project in
                             Task { await viewModel.addLocalDependencies(to: project) }
                         },
@@ -224,12 +221,6 @@ extension TabContentView {
                         },
                         onToggleRunScripts: { project in
                             Task { await viewModel.toggleRunScripts(for: project) }
-                        },
-                        onCreateBranch: { targetRepo, name, stashChanges in
-                            Task { await viewModel.createBranch(for: targetRepo, name: name, stashChanges: stashChanges) }
-                        },
-                        onSwitchBranch: { targetRepo, name, stashChanges in
-                            Task { await viewModel.switchBranch(for: targetRepo, name: name, stashChanges: stashChanges) }
                         }
                     )
                 }
@@ -250,12 +241,12 @@ extension TabContentView {
                 get: { viewModel.allSelected },
                 set: { _ in viewModel.toggleSelectAll() }
             )) {
-                Text("\(viewModel.selectedCount) of \(viewModel.repositories.count) selected")
+                Text("\(viewModel.selectedCount) of \(viewModel.repoViewModels.count) selected")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .toggleStyle(.checkbox)
-            .disabled(viewModel.repositories.isEmpty || viewModel.hasLoadingRepos)
+            .disabled(viewModel.repoViewModels.isEmpty)
 
             Spacer()
 
@@ -467,8 +458,7 @@ extension TabContentView {
 
     // Filterable list of branches (local + remote) across the selected repos
     private var recheckoutBranchSuggestions: [String] {
-        let query = viewModel.customBranchInput.trimmingCharacters(in: .whitespaces).lowercased()
-        return viewModel.recheckoutBranches.filter { query.isEmpty || $0.lowercased().contains(query) }
+        BranchSearch.ranked(viewModel.recheckoutBranches, query: viewModel.customBranchInput)
     }
 
     @ViewBuilder

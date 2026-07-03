@@ -1,26 +1,34 @@
 import SwiftUI
 
 struct RepoRowView: View {
-    let repo: GitRepo
-    let isSelected: Bool
-    let isOperating: Bool
+    // The single source of truth for this repo — shared with its sheets and diff window.
+    // @Bindable so the row re-renders when the VM's observable state changes (a plain `let`
+    // does not reliably drive updates for a leaf view inside the LazyVStack here).
+    @Bindable var vm: RepoViewModel
     let xcodeProjects: [XcodeProject]
-    let isPerformingOperation: Bool
-    let onToggle: () -> Void
+    // Xcode tasks stay coordinator concerns (they touch the project files + repo list).
     var onAddDependencies: (XcodeProject) -> Void = { _ in }
     var onRemoveDependencies: (XcodeProject) -> Void = { _ in }
     var onToggleRunScripts: (XcodeProject) -> Void = { _ in }
-    var onCreateBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
-    var onSwitchBranch: (GitRepo, String, Bool) -> Void = { _, _, _ in }
 
     @State private var showNewBranchSheet = false
+    @State private var showDeleteBranchSheet = false
+
+    // Convenience — the live repo data.
+    private var repo: GitRepo { vm.repo }
 
     var body: some View {
-        HStack(spacing: 10) {
+        // Establish the observation dependency that actually drives this leaf view's updates.
+        // Reading vm.repo (below, via `repo`) does not reliably register the row as an observer
+        // here, so the row would stay stuck on stale data (e.g. the initial .loading placeholder)
+        // until a forced rebuild. changeToken bumps on every refresh/op, so observing it makes
+        // the row re-render whenever the repo's data changes.
+        let _ = vm.changeToken
+        return HStack(spacing: 10) {
             // Selection checkbox
-            Button(action: onToggle) {
-                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(isSelected ? .blue : .secondary)
+            Button(action: { vm.isSelected.toggle() }) {
+                Image(systemName: vm.isSelected ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(vm.isSelected ? .blue : .secondary)
                     .font(.system(size: 16))
             }
             .buttonStyle(.plain)
@@ -37,7 +45,7 @@ struct RepoRowView: View {
             Color.clear
                 .frame(width: 20, height: 20)
                 .overlay {
-                    if isOperating {
+                    if vm.isOperating {
                         ProgressView()
                             .scaleEffect(0.4)
                     }
@@ -54,7 +62,7 @@ struct RepoRowView: View {
                 } else if repo.status == .loading {
                     Text("Loading...")
                 } else {
-                    Text(repo.hasUncommittedChanges ? "Changes" : "Clean")
+                    Text(repo.hasUncommittedChanges ? "Changes" : "")
                 }
                 if repo.hasConflicts {
                     Text("⚠️")
@@ -87,6 +95,30 @@ struct RepoRowView: View {
                 }
             }
 
+            // In-progress operation badge (mid-rebase / merge / cherry-pick / am)
+            if let operation = repo.inProgressOperation {
+                HStack(spacing: 3) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                    Text(operation.rawValue)
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(.red)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.red.opacity(0.12))
+                .clipShape(Capsule())
+                .help("\(operation.rawValue) in progress — use the git menu to continue or abort")
+            }
+
+            // Last operation error (single-repo ops) — hover for details
+            if let error = vm.lastOperationError {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .help(error)
+            }
+
             Spacer()
 
             // Xcode tasks menu (only when this repo contains Xcode projects)
@@ -110,7 +142,7 @@ struct RepoRowView: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Xcode Tasks")
-                .disabled(isPerformingOperation)
+                .disabled(vm.isOperating)
             }
 
             // Terminal button
@@ -124,19 +156,40 @@ struct RepoRowView: View {
             .buttonStyle(.plain)
             .help("Open in Terminal")
 
-            // Branch switch / create button
-            Button(action: { showNewBranchSheet = true }) {
-                Image(systemName: "arrow.triangle.branch")
+            // Git operations menu (merge / rebase, plus continue / abort when mid-operation)
+            Menu {
+                if let operation = repo.inProgressOperation {
+                    Section("\(operation.rawValue) in progress") {
+                        Button(action: { Task { await vm.continueInProgress() } }) {
+                            Label("Continue \(operation.rawValue)", systemImage: "arrow.right.circle")
+                        }
+                        Button(role: .destructive, action: { Task { await vm.abortInProgress() } }) {
+                            Label("Abort \(operation.rawValue)", systemImage: "xmark.circle")
+                        }
+                    }
+                    Divider()
+                }
+                Button(action: { showNewBranchSheet = true }) {
+                    Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
+                }
+                Divider()
+                Button(role: .destructive, action: { showDeleteBranchSheet = true }) {
+                    Label("Delete Branch…", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(repo.inProgressOperation != nil ? .red : .secondary)
             }
-            .buttonStyle(.plain)
-            .help("Switch or Create Branch")
-            .disabled(repo.status == .loading || isPerformingOperation)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(repo.inProgressOperation != nil ? "\(repo.inProgressOperation!.rawValue) in progress — Git Operations" : "Git Operations (Branches)")
+            .disabled(repo.status == .loading || vm.isOperating)
 
             // Diff / History button
             Button(action: {
-                DiffWindowManager.open(for: repo)
+                DiffWindowManager.open(for: vm)
             }) {
                 Image(systemName: "arrow.left.arrow.right")
                     .font(.system(size: 14))
@@ -161,17 +214,16 @@ struct RepoRowView: View {
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
         .background(
-            isOperating ? Color.orange.opacity(0.08) :
-                isSelected ? Color.blue.opacity(0.08) : Color.clear
+            vm.isOperating ? Color.orange.opacity(0.08) :
+                vm.isSelected ? Color.blue.opacity(0.08) : Color.clear
         )
         .cornerRadius(4)
-        .opacity(isOperating ? 0.8 : 1.0)
+        .opacity(vm.isOperating ? 0.8 : 1.0)
         .sheet(isPresented: $showNewBranchSheet) {
-            NewBranchSheet(
-                repo: repo,
-                onSwitch: { name, stashChanges in onSwitchBranch(repo, name, stashChanges) },
-                onCreate: { name, stashChanges in onCreateBranch(repo, name, stashChanges) }
-            )
+            NewBranchSheet(vm: vm)
+        }
+        .sheet(isPresented: $showDeleteBranchSheet) {
+            DeleteBranchSheet(vm: vm)
         }
     }
 
@@ -232,7 +284,7 @@ struct RepoRowView: View {
         if let scriptObject = NSAppleScript(source: myAppleScript) {
             scriptObject.executeAndReturnError(&error)
             if let error {
-                print("[ERROR] Failed to open terminal: \(error)")
+                debugLog("[ERROR] Failed to open terminal: \(error)")
             }
         }
     }
