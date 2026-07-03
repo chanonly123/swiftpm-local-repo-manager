@@ -333,7 +333,7 @@ struct DiffWindowView: View {
 
     @ViewBuilder
     private var commitsList: some View {
-        if loadingCommits {
+        if commits.isEmpty && loadingCommits {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if commits.isEmpty {
             Text("No commits")
