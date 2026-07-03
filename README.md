@@ -22,18 +22,33 @@ A native macOS app for managing multiple git repositories from a single interfac
 - Xcode 15.0+ (for building)
 - Git installed on your system
 
-## Installation & Usage
+## Installation
 
-1. Clone the repository:
-   ```sh
-   git clone https://github.com/chanonly123/swiftpm-local-repo-manager.git
-   cd swiftpm-local-repo-manager
-   ```
-2. Build and launch the app:
-   ```sh
-   sh run.sh
-   ```
-   > Alternatively, open `repo_manager.xcodeproj` in Xcode and run with `Cmd+R`.
+Clone the repo and run the launch script — it builds the app and opens it for you:
+
+```sh
+git clone https://github.com/chanonly123/swiftpm-local-repo-manager.git
+cd swiftpm-local-repo-manager
+sh run.sh
+```
+
+That's it. `run.sh` builds `repo_manager` with `xcodebuild` and launches the app.
+
+- **Clean build:** `sh run.sh -clean`
+- **Xcode instead:** open `repo_manager.xcodeproj` and run with `Cmd+R`.
+
+## Updating
+
+To pull the latest version, rebuild, and relaunch:
+
+```sh
+sh update.sh
+```
+
+You can also just click **Update App** inside the running app — it runs the same
+script in a new Terminal window. `update.sh` always builds from `main`,
+auto-stashes any local changes, and restores your branch and changes when it's
+done, so it's safe to run even if you're on a feature branch.
 
 ## Using the App
 
