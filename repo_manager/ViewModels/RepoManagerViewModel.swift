@@ -247,12 +247,16 @@ class RepoManagerViewModel {
             // observing first, so the updates propagate normally. (Cached rows keep showing
             // prior data meanwhile.)
             Task { @MainActor in
+                repoViewModels.forEach({ $0.isOperating = true })
                 await withTaskGroup(of: Void.self) { group in
                     for vm in self.repoViewModels {
-                        group.addTask { await vm.refresh() }
+                        // reload() (not refresh()) — refresh() no-ops while isOperating is
+                        // true, which we just set to drive the per-row spinner.
+                        group.addTask { await vm.reload() }
                     }
                 }
                 debugLog("[SUCCESS] Loaded repository information for \(self.repoViewModels.count) repos")
+                repoViewModels.forEach({ $0.isOperating = false })
             }
         } catch {
             debugLog("[ERROR] Failed to scan directory: \(error.localizedDescription)")

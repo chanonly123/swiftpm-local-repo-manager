@@ -49,7 +49,7 @@ struct GitRepo: Identifiable, Hashable {
 
         var displayText: String {
             switch self {
-            case .clean: return ""
+            case .clean: return "Clean"
             case .uncommittedChanges: return "changes"
             case .error(let message): return "Error: \(message)"
             case .loading: return "Loading..."

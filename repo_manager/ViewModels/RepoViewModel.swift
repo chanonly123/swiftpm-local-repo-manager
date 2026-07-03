@@ -16,7 +16,7 @@ final class RepoViewModel: Identifiable {
     // Selection lives here (replaces the coordinator's selectedRepoIDs set).
     var isSelected: Bool = false
     // True while a git operation on this repo is in flight (replaces operatingRepoIDs).
-    private(set) var isOperating: Bool = false
+    @MainActor var isOperating: Bool = false
     // Last single-op failure, shown inline on the row until the next op clears it.
     var lastOperationError: String?
     // Bumps on every refresh / operation. Detached observers (the diff window) watch this to
@@ -46,7 +46,7 @@ final class RepoViewModel: Identifiable {
     }
 
     @MainActor
-    private func reload() async {
+    func reload() async {
         let old = repo.status.displayText
         repo = await gitService.getRepoInfo(at: repo.url)
         changeToken &+= 1

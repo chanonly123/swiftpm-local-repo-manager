@@ -77,6 +77,27 @@ actor GitService {
         }
     }
 
+    // Paths of conflicted files that still contain leftover conflict markers.
+    // `git diff --check` reports "<path>:<line>: leftover conflict marker" for each,
+    // and exits non-zero while any remain. A conflicted file drops off this list once
+    // the user removes its <<<<<<< / ======= / >>>>>>> markers, i.e. resolves it.
+    nonisolated func unresolvedConflictPaths(at repoURL: URL) async throws -> Set<String> {
+        let output = try await runGitCommand(
+            args: ["diff", "--check"],
+            at: repoURL,
+            allowNonZeroExit: true
+        )
+        var paths = Set<String>()
+        for line in output.components(separatedBy: .newlines) {
+            guard line.hasSuffix("leftover conflict marker") else { continue }
+            // Format: "path/to/file:12: leftover conflict marker"
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let path = String(line[..<colon])
+            if !path.isEmpty { paths.insert(path) }
+        }
+        return paths
+    }
+
     // Commit history (paged) — newest first
     nonisolated func getCommitHistory(at repoURL: URL, skip: Int, limit: Int) async throws -> [(hash: String, shortHash: String, subject: String, author: String, relativeDate: String, tags: [String])] {
         // Unit-separator (\x1f) between fields keeps subjects with spaces intact; %D lists ref names
