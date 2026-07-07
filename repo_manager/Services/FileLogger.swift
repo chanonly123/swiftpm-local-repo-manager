@@ -5,8 +5,8 @@ import AppKit
 // reproduce reliably, so we persist a moderate log the user can share back.
 //
 // Non-sandboxed, so logs live in the user's ~/Library/Logs/<AppName>/ — the conventional
-// macOS location, visible in Console.app and easy to find/share. A fresh file is created
-// per app session; files older than a day are pruned on launch to bound disk use.
+// macOS location, visible in Console.app and easy to find/share. One file per calendar day
+// (sessions on the same day append to it); files older than 5 days are pruned on launch.
 //
 // All mutable state is confined to a private serial queue, so `log(_:)` is safe to call
 // synchronously from any thread/actor (it never blocks the caller — the write is async).
@@ -20,7 +20,7 @@ final class FileLogger: @unchecked Sendable {
     private var handle: FileHandle?
     // DateFormatter isn't thread-safe; only ever touched inside `queue`.
     private let timestampFormatter: DateFormatter
-    private let retention: TimeInterval = 24 * 60 * 60 // 1 day
+    private let retention: TimeInterval = 5 * 24 * 60 * 60 // 5 days
 
     private init() {
         let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
@@ -33,15 +33,18 @@ final class FileLogger: @unchecked Sendable {
         timestamp.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
         timestampFormatter = timestamp
 
-        // One file per session: session-yyyy-MM-dd-HHmmss.log
+        // One file per calendar day: yyyy-MM-dd.log
         let fileName = DateFormatter()
         fileName.locale = Locale(identifier: "en_US_POSIX")
-        fileName.dateFormat = "yyyy-MM-dd-HHmmss"
-        currentLogFileURL = logsDirectory.appendingPathComponent("session-\(fileName.string(from: Date())).log")
+        fileName.dateFormat = "yyyy-MM-dd"
+        currentLogFileURL = logsDirectory.appendingPathComponent("\(fileName.string(from: Date())).log")
 
         try? FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: currentLogFileURL.path, contents: nil)
+        if !FileManager.default.fileExists(atPath: currentLogFileURL.path) {
+            FileManager.default.createFile(atPath: currentLogFileURL.path, contents: nil)
+        }
         handle = try? FileHandle(forWritingTo: currentLogFileURL)
+        try? handle?.seekToEnd() // append after any earlier sessions from today
 
         queue.async { [weak self] in self?.pruneOldLogs() }
 
