@@ -17,6 +17,10 @@ final class RepoViewModel: Identifiable {
     var isSelected: Bool = false
     // True while a git operation on this repo is in flight (replaces operatingRepoIDs).
     @MainActor var isOperating: Bool = false
+    // Set after a history-rewriting op (rebase/squash/reset) so the diff window offers Force
+    // Push as the primary action; cleared once a push/force-push lands. Session-only — not
+    // persisted, resets to false on relaunch.
+    @MainActor var needsForcePush: Bool = false
     // Last single-op failure, shown inline on the row until the next op clears it.
     var lastOperationError: String?
     // Bumps on every refresh / operation. Detached observers (the diff window) watch this to
@@ -107,11 +111,15 @@ final class RepoViewModel: Identifiable {
     }
 
     @MainActor @discardableResult func push() async -> OperationResult {
-        await perform(.push) { try await self.gitService.push(at: $0.url) }
+        let result = await perform(.push) { try await self.gitService.push(at: $0.url) }
+        if result.success { needsForcePush = false }
+        return result
     }
 
     @MainActor @discardableResult func forcePush() async -> OperationResult {
-        await perform(.forcePush) { try await self.gitService.forcePush(at: $0.url) }
+        let result = await perform(.forcePush) { try await self.gitService.forcePush(at: $0.url) }
+        if result.success { needsForcePush = false }
+        return result
     }
 
     @MainActor @discardableResult func hardReset() async -> OperationResult {
@@ -127,7 +135,9 @@ final class RepoViewModel: Identifiable {
     }
 
     @MainActor @discardableResult func rebase(onto branch: String) async -> OperationResult {
-        await perform(.rebase) { try await self.gitService.rebase(at: $0.url, onto: branch) }
+        let result = await perform(.rebase) { try await self.gitService.rebase(at: $0.url, onto: branch) }
+        if result.success { needsForcePush = true }
+        return result
     }
 
     @MainActor @discardableResult func switchBranch(name: String, stashChanges: Bool) async -> OperationResult {
@@ -145,7 +155,10 @@ final class RepoViewModel: Identifiable {
     // Continue / abort the in-progress operation recorded on the repo (nil if none).
     @MainActor @discardableResult func continueInProgress() async -> OperationResult? {
         guard let operation = repo.inProgressOperation else { return nil }
-        return await perform(.continueOperation) { try await self.gitService.continueInProgress(at: $0.url, operation: operation) }
+        let result = await perform(.continueOperation) { try await self.gitService.continueInProgress(at: $0.url, operation: operation) }
+        // A rebase that paused on a conflict rewrites history once continued to completion.
+        if result.success, operation == .rebase { needsForcePush = true }
+        return result
     }
 
     @MainActor @discardableResult func abortInProgress() async -> OperationResult? {
