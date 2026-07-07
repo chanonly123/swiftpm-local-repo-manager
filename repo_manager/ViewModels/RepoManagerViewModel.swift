@@ -20,6 +20,7 @@ class RepoManagerViewModel {
     // Union of branches across the selected repos, shown in the recheckout popup
     var recheckoutBranches: [String] = []
     var showingHardResetConfirmation = false
+    var showingCleanConfirmation = false
     var showingForcePushConfirmation = false
     var xcodeProjects: [XcodeProject] = []
     private(set) var isStopping = false
@@ -376,6 +377,12 @@ class RepoManagerViewModel {
     @MainActor
     func hardResetSelected() async {
         await performBatch("hard-reset", on: selectedRepositoryVMs) { await $0.hardReset() }
+    }
+
+    // Clean (git clean -xdf) selected repositories
+    @MainActor
+    func cleanSelected() async {
+        await performBatch("clean", on: selectedRepositoryVMs) { await $0.clean() }
     }
 
     // Run a batch git operation over the given repo VMs with a bounded concurrency limit.
