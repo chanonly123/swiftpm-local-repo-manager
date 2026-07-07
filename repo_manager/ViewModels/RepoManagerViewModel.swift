@@ -176,6 +176,7 @@ class RepoManagerViewModel {
 
             if let validate = validate, !validate(url) { return }
 
+            debugLog("[DEBUG] User selected directory: \(url.path)")
             self.setDirectory(url)
             onSelected?(url)
             Task {
@@ -318,19 +319,19 @@ class RepoManagerViewModel {
     // Pull selected repositories
     @MainActor
     func pullSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.pull() }
+        await performBatch("pull", on: selectedRepositoryVMs) { await $0.pull() }
     }
 
     // Fetch selected repositories
     @MainActor
     func fetchSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.fetch() }
+        await performBatch("fetch", on: selectedRepositoryVMs) { await $0.fetch() }
     }
 
     // Recheckout selected repositories to current branch
     @MainActor
     func recheckoutCurrentBranch() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.recheckout() }
+        await performBatch("recheckout", on: selectedRepositoryVMs) { await $0.recheckout() }
     }
 
     // Load the union of local + remote branches across the selected repos so the
@@ -352,25 +353,25 @@ class RepoManagerViewModel {
     // Recheckout selected repositories to custom branch
     @MainActor
     func recheckoutToCustomBranch(_ branchName: String) async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.recheckout(toBranch: branchName) }
+        await performBatch("recheckout \(branchName)", on: selectedRepositoryVMs) { await $0.recheckout(toBranch: branchName) }
     }
 
     // Push selected repositories
     @MainActor
     func pushSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.push() }
+        await performBatch("push", on: selectedRepositoryVMs) { await $0.push() }
     }
 
     // Force-push selected repositories
     @MainActor
     func forcePushSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.forcePush() }
+        await performBatch("force-push", on: selectedRepositoryVMs) { await $0.forcePush() }
     }
 
     // Hard reset selected repositories
     @MainActor
     func hardResetSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.hardReset() }
+        await performBatch("hard-reset", on: selectedRepositoryVMs) { await $0.hardReset() }
     }
 
     // Run a batch git operation over the given repo VMs with a bounded concurrency limit.
@@ -379,10 +380,12 @@ class RepoManagerViewModel {
     // drains queued work when the user hits Stop.
     @MainActor
     private func performBatch(
+        _ label: String = "operation",
         on vms: [RepoViewModel],
         _ run: @escaping (RepoViewModel) async -> OperationResult
     ) async {
         guard !vms.isEmpty else { return }
+        debugLog("[BATCH] Starting \(label) on \(vms.count) repo(s), maxConcurrent=\(maxConcurrentOperations)")
 
         isStopping = false
         isPerformingOperation = true
@@ -418,6 +421,8 @@ class RepoManagerViewModel {
         }
 
         isPerformingOperation = false
+        let failures = operationResults.filter { !$0.success }.count
+        debugLog("[BATCH] Finished \(label): \(operationResults.count - failures) succeeded, \(failures) failed\(isStopping ? " (stopped early)" : "")")
         if !isStopping && self.operationResults.contains(where: { !$0.success }) {
             showingResults = true
         }
@@ -433,6 +438,7 @@ class RepoManagerViewModel {
     // Stop the current batch operation (lets running tasks finish, skips queued ones)
     func stopCurrentOperation() {
         guard isPerformingOperation else { return }
+        debugLog("[BATCH] Stop requested by user — draining queued operations")
         isStopping = true
     }
 

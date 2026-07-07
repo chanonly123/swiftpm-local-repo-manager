@@ -513,6 +513,10 @@ actor GitService {
 
     // Run a git command
     private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil) async throws -> String {
+        let repoName = repoURL.lastPathComponent
+        let command = "git \(args.joined(separator: " "))"
+        debugLog("[GIT] \(repoName) $ \(command)")
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = args
@@ -552,6 +556,7 @@ actor GitService {
             }
 
             guard let (outputData, errorData) = pipes else {
+                debugLog("[ERROR] \(repoName) timed out after 30s: \(command)")
                 throw GitServiceError.commandFailed("Git command timed out after 30 seconds")
             }
 
@@ -561,15 +566,16 @@ actor GitService {
             let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
 
             if process.terminationStatus != 0 && !allowNonZeroExit {
-                throw GitServiceError.commandFailed(errorOutput.isEmpty ? "Unknown error" : errorOutput)
+                let detail = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                debugLog("[ERROR] \(repoName) exit \(process.terminationStatus): \(command) — \(detail.isEmpty ? "Unknown error" : detail)")
+                throw GitServiceError.commandFailed(detail.isEmpty ? "Unknown error" : detail)
             }
 
             return output
         } catch let error as GitServiceError {
-            if logErrors { debugLog("[ERROR] runGitCommand: \(error.localizedDescription)") }
             throw error
         } catch {
-            if logErrors { debugLog("[ERROR] runGitCommand: \(error.localizedDescription)") }
+            if logErrors { debugLog("[ERROR] \(repoName) failed to launch: \(command) — \(error.localizedDescription)") }
             throw GitServiceError.commandFailed(error.localizedDescription)
         }
     }

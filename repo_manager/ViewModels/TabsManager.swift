@@ -115,6 +115,7 @@ class TabsManager {
             guard let newVer = versionToInt(tagName),
                   let currentVer = versionToInt(current),
                   newVer > currentVer else { return }
+            debugLog("[UPDATE] New version available: \(tagName) (current \(current))")
             newVersion = tagName
             newVersionDesc = release.body
             newVersionAlert = true

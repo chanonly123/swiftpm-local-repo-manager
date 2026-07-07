@@ -720,6 +720,7 @@ struct DiffWindowView: View {
         do {
             try await git.stageFiles(at: repo.url, paths: paths)
             _ = try await git.commitStaged(at: repo.url, message: message)
+            debugLog("[COMMIT] \(repo.name): committed \(paths.count) file(s)")
             // Keep the window open — clear the composer and refresh in place.
             commitMessage = ""
             checkedPaths.removeAll()
@@ -727,6 +728,7 @@ struct DiffWindowView: View {
             await loadFiles()
             await refreshCommits()
         } catch {
+            debugLog("[ERROR] \(repo.name): commit failed — \(error.localizedDescription)")
             commitError = error.localizedDescription
         }
     }
