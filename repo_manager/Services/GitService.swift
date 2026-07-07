@@ -65,16 +65,34 @@ actor GitService {
         return (hasChanges, hasMergeConflict, output)
     }
 
-    // List changed files from git status --porcelain
+    // List changed files from git status --porcelain.
+    //
+    // Uses -z (NUL-separated) rather than the default line format: without it, git C-quotes
+    // and wraps any path containing a space or non-ASCII byte in double quotes (e.g.
+    // `"hello world/file.txt"`), which the caller would then treat literally — quotes and all
+    // — breaking every follow-up command (diff, discard, open) on that file. With -z paths are
+    // emitted verbatim. Each record is `XY <path>` terminated by NUL; a rename/copy adds the
+    // source path as its own trailing NUL field, which we consume and ignore (we want the
+    // destination, which is already in the record).
+    //
+    // -uall lists untracked files individually instead of collapsing a new directory to just
+    // its path (e.g. `new dir/`), so each file is independently selectable/committable here.
     nonisolated func getChangedFiles(at repoURL: URL) async throws -> [(status: String, path: String)] {
-        let output = try await runGitCommand(args: ["status", "--porcelain"], at: repoURL)
-        return output.components(separatedBy: .newlines).compactMap { line in
-            guard line.count >= 4 else { return nil }
-            let xy = String(line.prefix(2))
-            var path = String(line.dropFirst(3))
-            if let range = path.range(of: " -> ") { path = String(path[range.upperBound...]) }
-            return path.isEmpty ? nil : (xy, path)
+        let output = try await runGitCommand(args: ["status", "--porcelain", "-uall", "-z"], at: repoURL)
+        let tokens = output.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
+        var result: [(status: String, path: String)] = []
+        var index = 0
+        while index < tokens.count {
+            let entry = tokens[index]
+            index += 1
+            guard entry.count >= 4 else { continue }
+            let xy = String(entry.prefix(2))
+            let path = String(entry.dropFirst(3))
+            // Rename/copy carries the source path in the next NUL field — skip it.
+            if xy.contains("R") || xy.contains("C") { index += 1 }
+            if !path.isEmpty { result.append((xy, path)) }
         }
+        return result
     }
 
     // Paths of conflicted files that still contain leftover conflict markers.
@@ -243,6 +261,18 @@ actor GitService {
     // Full diff for a single commit
     nonisolated func getCommitDiff(at repoURL: URL, hash: String) async throws -> String {
         try await runGitCommand(args: ["show", "--no-color", hash], at: repoURL)
+    }
+
+    // Cumulative patch between two revisions (`git diff <from> <to>`). Used to export the
+    // combined diff introduced by a contiguous range of commits.
+    nonisolated func getRangeDiff(at repoURL: URL, from: String, to: String) async throws -> String {
+        try await runGitCommand(args: ["diff", "--no-color", from, to], at: repoURL)
+    }
+
+    // Apply a patch/diff file to the working tree. --3way falls back to a 3-way merge when a
+    // hunk doesn't apply cleanly (leaving conflict markers to resolve) instead of aborting.
+    nonisolated func applyPatch(at repoURL: URL, patchPath: String) async throws -> String {
+        try await runGitCommand(args: ["apply", "--3way", patchPath], at: repoURL)
     }
 
     // List stash entries — newest first

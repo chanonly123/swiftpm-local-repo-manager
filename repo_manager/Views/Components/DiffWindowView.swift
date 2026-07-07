@@ -33,7 +33,7 @@ struct DiffWindowView: View {
 
     @State private var historyTab: HistoryTab = .commits
     @State private var stashes: [StashEntry] = []
-    @State private var selectedStash: String?
+    @State private var selectedStash: Set<String> = []
     @State private var loadingStashes = true
     @State private var resetTargetCommit: CommitEntry?
     @State private var branchActionMode: MergeRebaseSheet.Mode?
@@ -76,13 +76,13 @@ struct DiffWindowView: View {
         .onChange(of: selectedPath) { _, path in
             guard let path, let entry = files.first(where: { $0.id == path }) else { return }
             selectedCommits = []
-            selectedStash = nil
+            selectedStash = []
             Task { await loadDiff(entry: entry) }
         }
         .onChange(of: selectedCommits) { _, hashes in
             guard !hashes.isEmpty else { return }
             selectedPath = nil
-            selectedStash = nil
+            selectedStash = []
             // Show a diff only when a single commit is selected; multi-select is for squashing.
             if hashes.count == 1, let hash = hashes.first {
                 Task { await loadCommitDiff(hash: hash) }
@@ -91,11 +91,17 @@ struct DiffWindowView: View {
                 tooLarge = false
             }
         }
-        .onChange(of: selectedStash) { _, ref in
-            guard let ref else { return }
+        .onChange(of: selectedStash) { _, refs in
+            guard !refs.isEmpty else { return }
             selectedPath = nil
             selectedCommits = []
-            Task { await loadStashDiff(ref: ref) }
+            // Show a diff only when a single stash is selected; multi-select is for export.
+            if refs.count == 1, let ref = refs.first {
+                Task { await loadStashDiff(ref: ref) }
+            } else {
+                diffLines = []
+                tooLarge = false
+            }
         }
         // The shared VM bumps changeToken on any refresh (FSEvents, app-active, our own ops),
         // so we reload the window's lists in lockstep — no NotificationCenter needed.
@@ -144,6 +150,13 @@ struct DiffWindowView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                Button(action: { Task { await applyPatchFromFile() } }) {
+                    Label("Apply Patch", systemImage: "square.and.arrow.down.on.square")
+                }
+                .controlSize(.small)
+                .disabled(vm.isOperating)
+                .help("Apply a .diff/.patch file to the working tree")
 
                 Menu {
                     Button(action: { Task { await vm.push() } }) {
@@ -207,6 +220,13 @@ struct DiffWindowView: View {
             .disabled(vm.isOperating)
             .help("Switch or create a branch")
 
+            Button(action: { Task { await vm.recheckout() } }) {
+                Label("Recheckout", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .controlSize(.small)
+            .disabled(vm.isOperating || repo.currentBranch == nil)
+            .help("Stash, fetch, and re-checkout \(repo.currentBranch ?? "the current branch")")
+
             Button(action: { branchActionMode = .merge }) {
                 Label("Merge", systemImage: "arrow.triangle.merge")
             }
@@ -258,6 +278,22 @@ struct DiffWindowView: View {
         guard let n = squashableCount else { return "" }
         return commits.prefix(n).reversed().map(\.subject).joined(separator: "\n\n")
     }
+
+    // The selected items in list order, but only if they form a single contiguous block in
+    // `all` (no gaps). Returns nil otherwise — used to gate the "Create Diff" action, which
+    // only makes sense for a consecutive run.
+    private func contiguousSelection<T: Identifiable>(_ selection: Set<T.ID>, in all: [T]) -> [T]? {
+        guard !selection.isEmpty else { return nil }
+        let indices = all.indices.filter { selection.contains(all[$0].id) }
+        guard indices.count == selection.count else { return nil }
+        guard let first = indices.first, let last = indices.last,
+              last - first == indices.count - 1 else { return nil }
+        return indices.map { all[$0] }
+    }
+
+    // Contiguous selections (list order: newest-first for both) ready for diff export.
+    private var contiguousCommitSelection: [CommitEntry]? { contiguousSelection(selectedCommits, in: commits) }
+    private var contiguousStashSelection: [StashEntry]? { contiguousSelection(selectedStash, in: stashes) }
 
     // MARK: - Sidebar (Changed files + History)
 
@@ -455,6 +491,27 @@ struct DiffWindowView: View {
                 Label("Apply and Remove", systemImage: "tray.and.arrow.up.fill")
             }
             Divider()
+            if selectedStash.count >= 2 {
+                if let range = contiguousStashSelection {
+                    Button {
+                        Task { await createStashDiff(range) }
+                    } label: {
+                        Label("Create Diff (\(range.count) stashes)…", systemImage: "doc.badge.plus")
+                    }
+                } else {
+                    Button {} label: {
+                        Label("Create Diff — select consecutive stashes", systemImage: "doc.badge.plus")
+                    }
+                    .disabled(true)
+                }
+            } else {
+                Button {
+                    Task { await createStashDiff([stash]) }
+                } label: {
+                    Label("Create Diff…", systemImage: "doc.badge.plus")
+                }
+            }
+            Divider()
             Button(role: .destructive) {
                 Task { await dropStash(stash) }
             } label: {
@@ -524,6 +581,28 @@ struct DiffWindowView: View {
                     Label("Squash — select consecutive commits from the top", systemImage: "arrow.triangle.merge")
                 }
                 .disabled(true)
+            }
+
+            Divider()
+            if selectedCommits.count >= 2 {
+                if let range = contiguousCommitSelection {
+                    Button {
+                        Task { await createCommitDiff(range) }
+                    } label: {
+                        Label("Create Diff (\(range.count) commits)…", systemImage: "doc.badge.plus")
+                    }
+                } else {
+                    Button {} label: {
+                        Label("Create Diff — select consecutive commits", systemImage: "doc.badge.plus")
+                    }
+                    .disabled(true)
+                }
+            } else {
+                Button {
+                    Task { await createCommitDiff([commit]) }
+                } label: {
+                    Label("Create Diff…", systemImage: "doc.badge.plus")
+                }
             }
         }
     }
@@ -604,16 +683,25 @@ struct DiffWindowView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                Button(action: { Task { await performCommit() } }) {
-                    HStack(spacing: 4) {
-                        if isCommitting { ProgressView().scaleEffect(0.6).frame(width: 12, height: 12) }
-                        Text("Commit")
+                HStack(spacing: 6) {
+                    Button(action: { Task { await performCommit() } }) {
+                        HStack(spacing: 4) {
+                            if isCommitting { ProgressView().scaleEffect(0.6).frame(width: 12, height: 12) }
+                            Text("Commit")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCommitting || checkedPaths.isEmpty)
+
+                    Button(action: { Task { await createSelectedFilesDiff() } }) {
+                        Label("Create Diff", systemImage: "doc.badge.plus")
                             .font(.system(size: 12, weight: .medium))
                     }
-                    .frame(maxWidth: .infinity)
+                    .disabled(checkedPaths.isEmpty)
+                    .help("Save a diff of the checked files")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCommitting || checkedPaths.isEmpty)
             }
         }
         .padding(8)
@@ -708,7 +796,7 @@ struct DiffWindowView: View {
            let commit = commits.first(where: { $0.id == hash }) {
             return "\(commit.shortHash)  \(commit.subject)"
         }
-        if let ref = selectedStash,
+        if selectedStash.count == 1, let ref = selectedStash.first,
            let stash = stashes.first(where: { $0.id == ref }) {
             return "\(ref)  \(stash.message)"
         }
@@ -719,12 +807,16 @@ struct DiffWindowView: View {
     private var diffContent: some View {
         if loadingDiff {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if selectedPath == nil && selectedCommits.isEmpty && selectedStash == nil {
+        } else if selectedPath == nil && selectedCommits.isEmpty && selectedStash.isEmpty {
             Text("Select a file, commit, or stash to view changes")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if selectedCommits.count > 1 {
             Text("\(selectedCommits.count) commits selected")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if selectedStash.count > 1 {
+            Text("\(selectedStash.count) stashes selected")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if tooLarge {
@@ -891,10 +983,8 @@ struct DiffWindowView: View {
         do {
             let raw = try await git.getStashes(at: repo.url)
             stashes = raw.map { StashEntry(id: $0.ref, message: $0.message, relativeDate: $0.relativeDate) }
-            // Drop a stale stash selection if it no longer exists (e.g. it was popped)
-            if let sel = selectedStash, !stashes.contains(where: { $0.id == sel }) {
-                selectedStash = nil
-            }
+            // Drop any stale stash selections that no longer exist (e.g. popped/dropped)
+            selectedStash.formIntersection(Set(stashes.map { $0.id }))
         } catch {
             debugLog("[ERROR] DiffWindowView loadStashes: \(error)")
         }
@@ -963,10 +1053,100 @@ struct DiffWindowView: View {
     private func dropStash(_ stash: StashEntry) async {
         do {
             _ = try await git.dropStash(at: repo.url, ref: stash.id)
-            if selectedStash == stash.id { selectedStash = nil; diffLines = [] }
+            if selectedStash.contains(stash.id) { selectedStash.remove(stash.id); diffLines = [] }
             await loadStashes()
         } catch {
             debugLog("[ERROR] DiffWindowView dropStash: \(error)")
+        }
+    }
+
+    // MARK: - Create diff (export selected commits / stashes to a .diff file)
+
+    // Git's empty-tree object — used as the "from" side when the oldest commit is the repo
+    // root and therefore has no parent to diff against.
+    private static let emptyTreeHash = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+    // Cumulative patch introduced by a contiguous run of commits (list is newest-first).
+    private func createCommitDiff(_ selected: [CommitEntry]) async {
+        guard let newest = selected.first, let oldest = selected.last else { return }
+        let patch: String
+        do {
+            patch = try await git.getRangeDiff(at: repo.url, from: "\(oldest.id)^", to: newest.id)
+        } catch {
+            // Oldest is likely the root commit (no parent) — diff from the empty tree.
+            patch = (try? await git.getRangeDiff(at: repo.url, from: Self.emptyTreeHash, to: newest.id)) ?? ""
+        }
+        let name = selected.count == 1
+            ? "\(newest.shortHash).diff"
+            : "\(oldest.shortHash)..\(newest.shortHash).diff"
+        saveDiff(patch, suggestedName: name)
+    }
+
+    // Combined patch of the currently checked working-tree files (the same set the Commit
+    // button would stage). Tracked files diff against HEAD; untracked files diff against
+    // /dev/null so their full content is captured.
+    private func createSelectedFilesDiff() async {
+        let selected = files.filter { checkedPaths.contains($0.id) }
+        guard !selected.isEmpty else { return }
+        var parts: [String] = []
+        for entry in selected {
+            let raw = entry.status.hasPrefix("??")
+                ? (try? await git.getDiffUntracked(at: repo.url, filePath: entry.path)) ?? ""
+                : (try? await git.getDiff(at: repo.url, filePath: entry.path)) ?? ""
+            if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { parts.append(raw) }
+        }
+        saveDiff(parts.joined(separator: "\n"), suggestedName: "working-changes.diff")
+    }
+
+    // Combined patch of the selected stashes, each stash's diff concatenated in list order.
+    private func createStashDiff(_ selected: [StashEntry]) async {
+        var parts: [String] = []
+        for stash in selected {
+            if let patch = try? await git.getStashDiff(at: repo.url, ref: stash.id) {
+                parts.append("### \(stash.id)  \(stash.message)\n\(patch)")
+            }
+        }
+        let combined = parts.joined(separator: "\n")
+        let name = selected.count == 1 ? "\(selected[0].id).diff" : "stashes.diff"
+        saveDiff(combined, suggestedName: name)
+    }
+
+    // Prompt for a destination and write the patch to disk.
+    private func saveDiff(_ contents: String, suggestedName: String) {
+        guard !contents.isEmpty else {
+            debugLog("[DEBUG] Create diff: empty patch, nothing to save")
+            return
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(repo.name)-\(suggestedName)"
+        panel.canCreateDirectories = true
+        panel.title = "Save Diff"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try contents.write(to: url, atomically: true, encoding: .utf8)
+            debugLog("[SUCCESS] Saved diff to \(url.path)")
+        } catch {
+            debugLog("[ERROR] Failed to save diff: \(error.localizedDescription)")
+        }
+    }
+
+    // Pick a .diff/.patch file and apply it to the working tree.
+    private func applyPatchFromFile() async {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.title = "Select a .diff or .patch file to apply"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            _ = try await git.applyPatch(at: repo.url, patchPath: url.path)
+            vm.lastOperationError = nil
+            debugLog("[SUCCESS] Applied patch \(url.lastPathComponent) to \(repo.name)")
+            await vm.refresh()
+            await loadFiles()
+        } catch {
+            vm.lastOperationError = "Apply patch failed: \(error.localizedDescription)"
+            debugLog("[ERROR] Apply patch failed: \(error.localizedDescription)")
         }
     }
 

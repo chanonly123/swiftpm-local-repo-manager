@@ -102,6 +102,7 @@ struct TabContentView: View {
     var validateDirectory: ((URL) -> Bool)? = nil
 
     @State private var showingUpdateConfirmation = false
+    @State private var showingReportIssue = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -159,6 +160,9 @@ struct TabContentView: View {
             }
         } message: {
             Text("This will permanently discard ALL uncommitted changes and untracked files in \(viewModel.selectedCount) selected \(viewModel.selectedCount == 1 ? "repository" : "repositories").\n\nThis action CANNOT be undone.")
+        }
+        .sheet(isPresented: $showingReportIssue) {
+            ReportIssueView()
         }
         .alert("Update & Restart?", isPresented: $showingUpdateConfirmation) {
             Button("Cancel", role: .cancel) { }
@@ -232,6 +236,11 @@ extension TabContentView {
     // MARK: - Bottom Bar
     private var bottomBar: some View {
         HStack {
+            Button(action: { showingReportIssue = true }) {
+                Label("Report Issue", systemImage: "exclamationmark.bubble")
+            }
+            .help("Report a problem and share your logs")
+            
             updateButton
 
             scanButton
