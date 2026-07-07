@@ -369,11 +369,25 @@ actor GitService {
         )
     }
 
-    // Fetch from remote
+    // Fetch from remote. Fetch is the one command that can block on the network — waiting
+    // on a credential/host-key prompt or a stalled transfer — so it gets defenses the other
+    // commands don't need:
+    //   • GIT_TERMINAL_PROMPT=0 + SSH BatchMode: fail fast instead of blocking on a prompt.
+    //   • ConnectTimeout / http low-speed limits: abort a dead or crawling connection.
+    //   • an explicit 30s hard timeout in runGitCommand as the final backstop.
+    // It's also cancellable mid-flight via the Stop button (task cancellation → terminate).
     nonisolated func fetch(at repoURL: URL) async throws -> String {
         let out = try? await runGitCommand(
-            args: ["fetch", "--all"],
-            at: repoURL
+            args: [
+                "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=15",
+                "fetch", "--all"
+            ],
+            at: repoURL,
+            environment: [
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+            ],
+            timeout: .seconds(30)
         )
         return out ?? ""
     }
@@ -512,7 +526,7 @@ actor GitService {
     }
 
     // Run a git command
-    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil) async throws -> String {
+    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil, timeout: Duration = .seconds(30)) async throws -> String {
         let repoName = repoURL.lastPathComponent
         let command = "git \(args.joined(separator: " "))"
         debugLog("[GIT] \(repoName) $ \(command)")
@@ -530,53 +544,62 @@ actor GitService {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        do {
-            try process.run()
+        // Terminate the process if the enclosing task is cancelled (the user hit Stop) so a
+        // blocked read unwinds immediately instead of waiting out the full timeout.
+        return try await withTaskCancellationHandler {
+            do {
+                try process.run()
 
-            // Drain stdout/stderr *while* the process runs. Reading only after the
-            // process exits deadlocks when output exceeds the OS pipe buffer (~64KB):
-            // the child blocks writing to the full pipe and never exits. A newly
-            // added file's full-content diff easily crosses that threshold. A 30s
-            // timeout (which terminates the process to unblock the reads) guards
-            // against a genuinely hung git.
-            let pipes: (Data, Data)? = await withTaskGroup(of: (Data, Data)?.self) { group in
-                group.addTask {
-                    let out = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    let err = (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    return (out, err)
+                // Drain stdout/stderr *while* the process runs. Reading only after the
+                // process exits deadlocks when output exceeds the OS pipe buffer (~64KB):
+                // the child blocks writing to the full pipe and never exits. A newly
+                // added file's full-content diff easily crosses that threshold. The
+                // `timeout` (which terminates the process to unblock the reads) guards
+                // against a genuinely hung git; the cancellation task below reacts to Stop.
+                let pipes: (Data, Data)? = await withTaskGroup(of: (Data, Data)?.self) { group in
+                    group.addTask {
+                        let out = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
+                        let err = (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
+                        return (out, err)
+                    }
+                    group.addTask {
+                        // Wakes on either the timeout elapsing or task cancellation (sleep
+                        // throws), then terminates git so the reader hits EOF and returns.
+                        try? await Task.sleep(for: timeout)
+                        if process.isRunning { process.terminate() }
+                        return nil
+                    }
+                    let result = await group.next() ?? nil
+                    group.cancelAll()
+                    return result
                 }
-                group.addTask {
-                    try? await Task.sleep(for: .seconds(30))
-                    if process.isRunning { process.terminate() }
-                    return nil
+
+                guard let (outputData, errorData) = pipes else {
+                    let reason = Task.isCancelled ? "cancelled" : "timed out after \(timeout)"
+                    debugLog("[ERROR] \(repoName) \(reason): \(command)")
+                    throw GitServiceError.commandFailed("Git command \(reason)")
                 }
-                let result = await group.next() ?? nil
-                group.cancelAll()
-                return result
+
+                process.waitUntilExit()
+
+                let output = String(data: outputData, encoding: .utf8) ?? ""
+                let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+
+                if process.terminationStatus != 0 && !allowNonZeroExit {
+                    let detail = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    debugLog("[ERROR] \(repoName) exit \(process.terminationStatus): \(command) — \(detail.isEmpty ? "Unknown error" : detail)")
+                    throw GitServiceError.commandFailed(detail.isEmpty ? "Unknown error" : detail)
+                }
+
+                return output
+            } catch let error as GitServiceError {
+                throw error
+            } catch {
+                if logErrors { debugLog("[ERROR] \(repoName) failed to launch: \(command) — \(error.localizedDescription)") }
+                throw GitServiceError.commandFailed(error.localizedDescription)
             }
-
-            guard let (outputData, errorData) = pipes else {
-                debugLog("[ERROR] \(repoName) timed out after 30s: \(command)")
-                throw GitServiceError.commandFailed("Git command timed out after 30 seconds")
-            }
-
-            process.waitUntilExit()
-
-            let output = String(data: outputData, encoding: .utf8) ?? ""
-            let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
-
-            if process.terminationStatus != 0 && !allowNonZeroExit {
-                let detail = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-                debugLog("[ERROR] \(repoName) exit \(process.terminationStatus): \(command) — \(detail.isEmpty ? "Unknown error" : detail)")
-                throw GitServiceError.commandFailed(detail.isEmpty ? "Unknown error" : detail)
-            }
-
-            return output
-        } catch let error as GitServiceError {
-            throw error
-        } catch {
-            if logErrors { debugLog("[ERROR] \(repoName) failed to launch: \(command) — \(error.localizedDescription)") }
-            throw GitServiceError.commandFailed(error.localizedDescription)
+        } onCancel: {
+            if process.isRunning { process.terminate() }
         }
     }
 

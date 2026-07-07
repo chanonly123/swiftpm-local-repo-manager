@@ -88,7 +88,12 @@ final class RepoViewModel: Identifiable {
                 timestamp: Date()
             )
         }
-        await reload()
+        // If the user cancelled (Stop), skip the reload — its git commands would be
+        // terminated too and flip the repo to an error state. Keep the prior status; a
+        // later refresh/FSEvents update will reconcile it.
+        if !Task.isCancelled {
+            await reload()
+        }
         isOperating = false
         return result
     }
