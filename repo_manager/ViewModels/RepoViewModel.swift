@@ -126,6 +126,10 @@ final class RepoViewModel: Identifiable {
         await perform(.hardReset) { try await self.gitService.hardReset(at: $0.url) }
     }
 
+    @MainActor @discardableResult func clean() async -> OperationResult {
+        await perform(.clean) { try await self.gitService.clean(at: $0.url) }
+    }
+
     @MainActor @discardableResult func recheckout(toBranch: String? = nil) async -> OperationResult {
         await perform(.recheckout) { try await self.gitService.recheckout(at: $0.url, toBranch: toBranch) }
     }

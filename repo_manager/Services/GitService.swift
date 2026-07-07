@@ -53,7 +53,8 @@ actor GitService {
     nonisolated func getStatus(at repoURL: URL) async throws -> (hasChanges: Bool, hasConflicts: Bool, output: String) {
         let output = try await runGitCommand(
             args: ["status", "--porcelain"],
-            at: repoURL
+            at: repoURL,
+            noOptionalLocks: true
         )
         let hasChanges = !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
@@ -78,7 +79,7 @@ actor GitService {
     // -uall lists untracked files individually instead of collapsing a new directory to just
     // its path (e.g. `new dir/`), so each file is independently selectable/committable here.
     nonisolated func getChangedFiles(at repoURL: URL) async throws -> [(status: String, path: String)] {
-        let output = try await runGitCommand(args: ["status", "--porcelain", "-uall", "-z"], at: repoURL)
+        let output = try await runGitCommand(args: ["status", "--porcelain", "-uall", "-z"], at: repoURL, noOptionalLocks: true)
         let tokens = output.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
         var result: [(status: String, path: String)] = []
         var index = 0
@@ -103,7 +104,8 @@ actor GitService {
         let output = try await runGitCommand(
             args: ["diff", "--check"],
             at: repoURL,
-            allowNonZeroExit: true
+            allowNonZeroExit: true,
+            noOptionalLocks: true
         )
         var paths = Set<String>()
         for line in output.components(separatedBy: .newlines) {
@@ -357,7 +359,7 @@ actor GitService {
 
     // Diff for a tracked file vs HEAD (staged + unstaged)
     nonisolated func getDiff(at repoURL: URL, filePath: String) async throws -> String {
-        try await runGitCommand(args: ["diff", "HEAD", "--", filePath], at: repoURL)
+        try await runGitCommand(args: ["diff", "HEAD", "--", filePath], at: repoURL, noOptionalLocks: true)
     }
 
     // Diff for an untracked file (git diff --no-index exits 1 when diffs exist)
@@ -524,6 +526,18 @@ actor GitService {
         return messages.joined(separator: "\n")
     }
 
+    // Remove ALL untracked and ignored files/directories (git clean -xdf). Unlike the clean
+    // baked into hardReset (-f -d), the -x flag also deletes ignored files — build artifacts,
+    // caches, DerivedData, etc. Does not touch tracked changes.
+    nonisolated func clean(at repoURL: URL) async throws -> String {
+        let output = try await runGitCommand(args: ["clean", "-xdf"], at: repoURL)
+        let removed = output
+            .components(separatedBy: .newlines)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .count
+        return "✓ Cleaned \(removed) untracked/ignored item(s)"
+    }
+
     // Get ahead/behind counts relative to upstream
     nonisolated func getAheadBehind(at repoURL: URL, branch: String) async -> (ahead: Int, behind: Int)? {
         // Pick a remote ref to compare against. Prefer this branch's own remote
@@ -556,14 +570,18 @@ actor GitService {
     }
 
     // Run a git command
-    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil, timeout: Duration = .seconds(30)) async throws -> String {
+    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil, timeout: Duration = .seconds(30), noOptionalLocks: Bool = false) async throws -> String {
         let repoName = repoURL.lastPathComponent
-        let command = "git \(args.joined(separator: " "))"
+        // --no-optional-locks stops read-only commands (status/diff) from taking index.lock
+        // for their opportunistic index refresh, so they can never contend with a concurrent
+        // write on the same repo (e.g. an FSEvents-triggered status during a commit/rebase).
+        let fullArgs = noOptionalLocks ? ["--no-optional-locks"] + args : args
+        let command = "git \(fullArgs.joined(separator: " "))"
         debugLog("[GIT] \(repoName) $ \(command)")
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
-        process.arguments = args
+        process.arguments = fullArgs
         process.currentDirectoryURL = repoURL
         if let environment {
             process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }

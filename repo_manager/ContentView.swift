@@ -161,6 +161,16 @@ struct TabContentView: View {
         } message: {
             Text("This will permanently discard ALL uncommitted changes and untracked files in \(viewModel.selectedCount) selected \(viewModel.selectedCount == 1 ? "repository" : "repositories").\n\nThis action CANNOT be undone.")
         }
+        .alert("⚠️ Clean Warning", isPresented: $viewModel.showingCleanConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clean", role: .destructive) {
+                Task {
+                    await viewModel.cleanSelected()
+                }
+            }
+        } message: {
+            Text("This runs git clean -xdf on \(viewModel.selectedCount) selected \(viewModel.selectedCount == 1 ? "repository" : "repositories"), permanently deleting ALL untracked AND ignored files/directories (build artifacts, caches, DerivedData, etc.).\n\nThis action CANNOT be undone.")
+        }
         .sheet(isPresented: $showingReportIssue) {
             ReportIssueView()
         }
@@ -324,6 +334,12 @@ extension TabContentView {
                         viewModel.showingHardResetConfirmation = true
                     }) {
                         Label("Hard Reset", systemImage: "exclamationmark.triangle")
+                    }
+
+                    Button(role: .destructive, action: {
+                        viewModel.showingCleanConfirmation = true
+                    }) {
+                        Label("Delete untracked files", systemImage: "trash")
                     }
                 } label: {
                     Label("Actions", systemImage: "ellipsis.circle")

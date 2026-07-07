@@ -13,6 +13,7 @@ struct OperationResult: Identifiable {
         case fetch = "Fetch"
         case recheckout = "Recheckout"
         case hardReset = "Hard Reset"
+        case clean = "Clean"
         case push = "Push"
         case forcePush = "Force Push"
         case status = "Status"

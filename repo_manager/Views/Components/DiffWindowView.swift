@@ -151,13 +151,6 @@ struct DiffWindowView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
-                Button(action: { Task { await applyPatchFromFile() } }) {
-                    Label("Apply Patch", systemImage: "square.and.arrow.down.on.square")
-                }
-                .controlSize(.small)
-                .disabled(vm.isOperating)
-                .help("Apply a .diff/.patch file to the working tree")
-
                 Menu {
                     Button(action: { Task { await vm.push() } }) {
                         Label("Push", systemImage: "arrow.up")
@@ -185,6 +178,37 @@ struct DiffWindowView: View {
                 .help(vm.needsForcePush
                       ? "History was rewritten — force-push \(branch) to origin"
                       : "Push \(branch) to origin")
+
+                // All branch / working-tree operations collapsed into one menu.
+                Menu {
+                    Button(action: { showNewBranchSheet = true }) {
+                        Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
+                    }
+                    Button(action: { Task { await vm.recheckout() } }) {
+                        Label("Recheckout", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    Divider()
+                    Button(action: { branchActionMode = .merge }) {
+                        Label("Merge…", systemImage: "arrow.triangle.merge")
+                    }
+                    Button(action: { branchActionMode = .rebase }) {
+                        Label("Rebase…", systemImage: "arrow.triangle.pull")
+                    }
+                    Divider()
+                    Button(action: { Task { await applyPatchFromFile() } }) {
+                        Label("Apply Patch…", systemImage: "square.and.arrow.down.on.square")
+                    }
+                    Divider()
+                    Button(role: .destructive, action: { showDeleteBranchSheet = true }) {
+                        Label("Delete Branch…", systemImage: "trash")
+                    }
+                } label: {
+                    Label("Actions", systemImage: "ellipsis.circle")
+                }
+                .menuStyle(.button)
+                .fixedSize()
+                .controlSize(.small)
+                .disabled(vm.isOperating)
             }
 
             if let operation = repo.inProgressOperation {
@@ -212,39 +236,6 @@ struct DiffWindowView: View {
             }
 
             Spacer()
-
-            Button(action: { showNewBranchSheet = true }) {
-                Label("Branch", systemImage: "arrow.triangle.branch")
-            }
-            .controlSize(.small)
-            .disabled(vm.isOperating)
-            .help("Switch or create a branch")
-
-            Button(action: { Task { await vm.recheckout() } }) {
-                Label("Recheckout", systemImage: "arrow.triangle.2.circlepath")
-            }
-            .controlSize(.small)
-            .disabled(vm.isOperating || repo.currentBranch == nil)
-            .help("Stash, fetch, and re-checkout \(repo.currentBranch ?? "the current branch")")
-
-            Button(action: { branchActionMode = .merge }) {
-                Label("Merge", systemImage: "arrow.triangle.merge")
-            }
-            .controlSize(.small)
-            .disabled(vm.isOperating)
-
-            Button(action: { branchActionMode = .rebase }) {
-                Label("Rebase", systemImage: "arrow.triangle.pull")
-            }
-            .controlSize(.small)
-            .disabled(vm.isOperating)
-
-            Button(role: .destructive, action: { showDeleteBranchSheet = true }) {
-                Label("Delete", systemImage: "trash")
-            }
-            .controlSize(.small)
-            .disabled(vm.isOperating)
-            .help("Delete a branch")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -840,6 +831,7 @@ struct DiffWindowView: View {
         guard !message.isEmpty, !paths.isEmpty else { return }
         isCommitting = true
         commitError = nil
+        vm.isOperating = true // suppress FSEvents refreshes while this write runs
         defer { isCommitting = false }
         do {
             try await git.stageFiles(at: repo.url, paths: paths)
@@ -848,10 +840,12 @@ struct DiffWindowView: View {
             // Keep the window open — clear the composer and refresh in place.
             commitMessage = ""
             checkedPaths.removeAll()
+            vm.isOperating = false // release before refreshing so refresh() isn't skipped
             await vm.refresh()
             await loadFiles()
             await refreshCommits()
         } catch {
+            vm.isOperating = false
             debugLog("[ERROR] \(repo.name): commit failed — \(error.localizedDescription)")
             commitError = error.localizedDescription
         }
@@ -1007,14 +1001,17 @@ struct DiffWindowView: View {
     // MARK: - Commit / stash actions
 
     private func resetToCommit(_ commit: CommitEntry, hard: Bool) async {
+        vm.isOperating = true // suppress FSEvents refreshes while this write runs
         do {
             _ = try await git.resetToCommit(at: repo.url, hash: commit.id, hard: hard)
             vm.needsForcePush = true // moving the branch rewrites history vs origin
+            vm.isOperating = false // release before refreshing so refresh() isn't skipped
             // Refresh the shared VM so the row (branch position + status) updates too.
             await vm.refresh()
             await loadFiles()
             await refreshCommits()
         } catch {
+            vm.isOperating = false
             debugLog("[ERROR] DiffWindowView resetToCommit: \(error)")
         }
     }
@@ -1023,14 +1020,17 @@ struct DiffWindowView: View {
         guard let count = squashableCount else { return }
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        vm.isOperating = true // suppress FSEvents refreshes while this write runs
         do {
             _ = try await git.squashCommits(at: repo.url, count: count, message: trimmed)
             vm.needsForcePush = true // squash rewrites history vs origin
             selectedCommits = []
+            vm.isOperating = false // release before refreshing so refresh() isn't skipped
             await vm.refresh()
             await loadFiles()
             await refreshCommits()
         } catch {
+            vm.isOperating = false
             debugLog("[ERROR] DiffWindowView squashSelectedCommits: \(error)")
         }
     }
@@ -1138,13 +1138,16 @@ struct DiffWindowView: View {
         panel.allowsMultipleSelection = false
         panel.title = "Select a .diff or .patch file to apply"
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        vm.isOperating = true // suppress FSEvents refreshes while this write runs
         do {
             _ = try await git.applyPatch(at: repo.url, patchPath: url.path)
             vm.lastOperationError = nil
             debugLog("[SUCCESS] Applied patch \(url.lastPathComponent) to \(repo.name)")
+            vm.isOperating = false // release before refreshing so refresh() isn't skipped
             await vm.refresh()
             await loadFiles()
         } catch {
+            vm.isOperating = false
             vm.lastOperationError = "Apply patch failed: \(error.localizedDescription)"
             debugLog("[ERROR] Apply patch failed: \(error.localizedDescription)")
         }
