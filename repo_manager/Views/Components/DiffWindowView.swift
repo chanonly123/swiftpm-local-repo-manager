@@ -38,6 +38,8 @@ struct DiffWindowView: View {
     @State private var resetTargetCommit: CommitEntry?
     @State private var branchActionMode: MergeRebaseSheet.Mode?
     @State private var showingForcePushConfirm = false
+    @State private var showNewBranchSheet = false
+    @State private var showDeleteBranchSheet = false
     // The hosting NSWindow, captured so we can keep its (non-SwiftUI) title in sync.
     @State private var hostWindow: NSWindow?
 
@@ -122,6 +124,12 @@ struct DiffWindowView: View {
         .sheet(item: $branchActionMode) { mode in
             MergeRebaseSheet(vm: vm, mode: mode)
         }
+        .sheet(isPresented: $showNewBranchSheet) {
+            NewBranchSheet(vm: vm)
+        }
+        .sheet(isPresented: $showDeleteBranchSheet) {
+            DeleteBranchSheet(vm: vm)
+        }
     }
 
     // MARK: - Branch operations bar (merge / rebase, plus continue / abort mid-operation)
@@ -146,15 +154,24 @@ struct DiffWindowView: View {
                         Label("Force Push…", systemImage: "exclamationmark.triangle")
                     }
                 } label: {
-                    Label(pushLabel, systemImage: "arrow.up")
+                    Label(pushLabel, systemImage: vm.needsForcePush ? "exclamationmark.triangle" : "arrow.up")
                 } primaryAction: {
-                    Task { await vm.push() }
+                    // After a rebase/squash/reset the local history diverges from origin, so a
+                    // plain push would be rejected — default the primary action to force push.
+                    if vm.needsForcePush {
+                        showingForcePushConfirm = true
+                    } else {
+                        Task { await vm.push() }
+                    }
                 }
                 .menuStyle(.button)
                 .fixedSize()
                 .controlSize(.small)
+                .tint(vm.needsForcePush ? .orange : nil)
                 .disabled(vm.isOperating)
-                .help("Push \(branch) to origin")
+                .help(vm.needsForcePush
+                      ? "History was rewritten — force-push \(branch) to origin"
+                      : "Push \(branch) to origin")
             }
 
             if let operation = repo.inProgressOperation {
@@ -183,6 +200,13 @@ struct DiffWindowView: View {
 
             Spacer()
 
+            Button(action: { showNewBranchSheet = true }) {
+                Label("Branch", systemImage: "arrow.triangle.branch")
+            }
+            .controlSize(.small)
+            .disabled(vm.isOperating)
+            .help("Switch or create a branch")
+
             Button(action: { branchActionMode = .merge }) {
                 Label("Merge", systemImage: "arrow.triangle.merge")
             }
@@ -194,6 +218,13 @@ struct DiffWindowView: View {
             }
             .controlSize(.small)
             .disabled(vm.isOperating)
+
+            Button(role: .destructive, action: { showDeleteBranchSheet = true }) {
+                Label("Delete", systemImage: "trash")
+            }
+            .controlSize(.small)
+            .disabled(vm.isOperating)
+            .help("Delete a branch")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -208,6 +239,7 @@ struct DiffWindowView: View {
 
     // "Push" plus the ahead count when the branch is ahead of its upstream.
     private var pushLabel: String {
+        if vm.needsForcePush { return "Force Push" }
         if let ahead = repo.aheadCount, ahead > 0 { return "Push \(ahead)" }
         return "Push"
     }
@@ -887,6 +919,7 @@ struct DiffWindowView: View {
     private func resetToCommit(_ commit: CommitEntry, hard: Bool) async {
         do {
             _ = try await git.resetToCommit(at: repo.url, hash: commit.id, hard: hard)
+            vm.needsForcePush = true // moving the branch rewrites history vs origin
             // Refresh the shared VM so the row (branch position + status) updates too.
             await vm.refresh()
             await loadFiles()
@@ -902,6 +935,7 @@ struct DiffWindowView: View {
         guard !trimmed.isEmpty else { return }
         do {
             _ = try await git.squashCommits(at: repo.url, count: count, message: trimmed)
+            vm.needsForcePush = true // squash rewrites history vs origin
             selectedCommits = []
             await vm.refresh()
             await loadFiles()
