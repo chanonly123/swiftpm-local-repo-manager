@@ -272,7 +272,9 @@ extension TabContentView {
                 HStack(spacing: 8) {
                     ProgressView()
                         .scaleEffect(0.7)
-                    Text("Performing operation...")
+                    Text(viewModel.currentOperationLabel.isEmpty
+                         ? "Performing operation…"
+                         : "\(viewModel.currentOperationLabel.capitalized)…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("Stop") {

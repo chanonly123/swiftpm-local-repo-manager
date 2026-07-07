@@ -62,7 +62,11 @@ enum AppUpdater {
     /// its binary can be replaced.
     @MainActor
     static func updateAndRestart() throws {
-        guard let repo = repoRoot() else { throw UpdateError.repoNotFound }
+        guard let repo = repoRoot() else {
+            debugLog("[UPDATE] Self-update aborted: source repo not found")
+            throw UpdateError.repoNotFound
+        }
+        debugLog("[UPDATE] Starting self-update from repo: \(repo.path)")
         let script = repo.appendingPathComponent("update.sh")
 
         // Single-quote the paths for the shell; no double quotes inside, so the

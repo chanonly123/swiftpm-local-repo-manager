@@ -20,6 +20,9 @@ struct DiffWindowView: View {
     @State private var isCommitting = false
     @State private var commitError: String?
     @State private var gitIdentity: (name: String, email: String) = ("", "")
+    // Conflicted files that still contain leftover conflict markers (unresolved).
+    // Refreshed by loadFiles(); once empty, the conflict warning gives way to the commit UI.
+    @State private var unresolvedConflicts: Set<String> = []
 
     @State private var commits: [CommitEntry] = []
     @State private var selectedCommits: Set<String> = []
@@ -493,8 +496,16 @@ struct DiffWindowView: View {
         }
     }
 
-    private var hasConflicts: Bool {
-        files.contains { $0.status.contains("U") || ($0.status.first == "A" && $0.status.last == "A") || ($0.status.first == "D" && $0.status.last == "D") }
+    // A porcelain status representing an active merge conflict (UU/AA/DD/AU/UA/DU/UD).
+    private func isConflict(_ status: String) -> Bool {
+        status.contains("U") || (status.first == "A" && status.last == "A") || (status.first == "D" && status.last == "D")
+    }
+
+    // Block committing only while conflicts still have leftover markers. Once the user
+    // removes the markers the files are treated as resolved — committing git-adds them,
+    // which is how git marks a conflict resolved.
+    private var hasUnresolvedConflicts: Bool {
+        !unresolvedConflicts.isEmpty
     }
 
     // "Name <email>", or just whichever is set — nil when neither is configured.
@@ -510,11 +521,17 @@ struct DiffWindowView: View {
 
     private var commitPanel: some View {
         VStack(spacing: 6) {
-            if hasConflicts {
-                Label("Resolve merge conflicts before committing", systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if hasUnresolvedConflicts {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Resolve merge conflicts before committing", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                    Text(unresolvedConflicts.map { ($0 as NSString).lastPathComponent }.sorted().joined(separator: ", "))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 CommitMessageEditor(text: $commitMessage)
                     .frame(height: 60)
@@ -583,6 +600,7 @@ struct DiffWindowView: View {
             .toggleStyle(.checkbox)
             .labelsHidden()
 
+            // Left: change type (added / deleted / modified …).
             Text(badge(entry.status))
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
                 .foregroundStyle(.white)
@@ -593,6 +611,17 @@ struct DiffWindowView: View {
                 .font(.system(size: 12))
                 .lineLimit(1)
                 .help(entry.path)
+
+            // Right: conflict/clean tick — only for files that came in as a conflict.
+            // Green ✓ once the markers are gone (resolved/clean), orange ⚠ while unresolved.
+            if isConflict(entry.status) {
+                Spacer(minLength: 4)
+                let resolved = !unresolvedConflicts.contains(entry.path)
+                Image(systemName: resolved ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(resolved ? .green : .orange)
+                    .help(resolved ? "Conflict resolved" : "Unresolved merge conflict")
+            }
         }
         .contextMenu {
             Button {
@@ -691,6 +720,7 @@ struct DiffWindowView: View {
         do {
             try await git.stageFiles(at: repo.url, paths: paths)
             _ = try await git.commitStaged(at: repo.url, message: message)
+            debugLog("[COMMIT] \(repo.name): committed \(paths.count) file(s)")
             // Keep the window open — clear the composer and refresh in place.
             commitMessage = ""
             checkedPaths.removeAll()
@@ -698,6 +728,7 @@ struct DiffWindowView: View {
             await loadFiles()
             await refreshCommits()
         } catch {
+            debugLog("[ERROR] \(repo.name): commit failed — \(error.localizedDescription)")
             commitError = error.localizedDescription
         }
     }
@@ -721,6 +752,12 @@ struct DiffWindowView: View {
             let previousIDs = Set(files.map { $0.id })
             files = raw.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
             let currentIDs = Set(files.map { $0.id })
+            // While any file is in a conflict state, check which still have leftover
+            // markers. Editing/saving the file (or FSEvents) re-runs loadFiles, so the
+            // set updates live as the user resolves each conflict.
+            unresolvedConflicts = files.contains(where: { isConflict($0.status) })
+                ? (try? await git.unresolvedConflictPaths(at: repo.url)) ?? []
+                : []
             // Preserve the user's checkbox choices; auto-check only newly-appeared files
             let appeared = currentIDs.subtracting(previousIDs)
             checkedPaths = checkedPaths.intersection(currentIDs).union(appeared)
@@ -935,9 +972,11 @@ struct DiffWindowView: View {
 
     // MARK: - Status badge helpers
 
+    // Change-type badge only (added / deleted / modified / renamed / untracked). Conflict
+    // state is shown separately by the right-side tick, so conflict statuses map to their
+    // underlying change type here (e.g. AA→A, DD→D, UU→M).
     private func badge(_ xy: String) -> String {
         if xy == "??" { return "+" }
-        if xy.contains("U") || (xy.first == "A" && xy.last == "A") { return "!" }
         if xy.hasPrefix("R") { return "R" }
         if xy.hasPrefix("A") || xy.hasSuffix("A") { return "A" }
         if xy.hasPrefix("D") || xy.hasSuffix("D") { return "D" }
@@ -946,10 +985,10 @@ struct DiffWindowView: View {
 
     private func badgeColor(_ xy: String) -> Color {
         switch badge(xy) {
+        case "M": return .orange
         case "A": return .green
         case "D": return .red
         case "R": return .blue
-        case "!": return .orange
         case "+": return .green
         default: return .gray
         }

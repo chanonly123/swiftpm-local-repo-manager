@@ -8,6 +8,8 @@ class RepoManagerViewModel {
     var repoViewModels: [RepoViewModel] = []
     var isScanning = false
     var isPerformingOperation = false
+    // Human-readable label of the batch operation currently running, shown in the toolbar.
+    var currentOperationLabel = ""
     var currentDirectory: URL?
     var operationResults: [OperationResult] = []
     var showingResults = false
@@ -21,6 +23,8 @@ class RepoManagerViewModel {
     var showingForcePushConfirmation = false
     var xcodeProjects: [XcodeProject] = []
     private(set) var isStopping = false
+    // The running batch, held so Stop can cancel it (which terminates in-flight git processes).
+    private var operationTask: Task<Void, Never>?
 
     private let gitService = GitService()
     private let repoService = RepoService()
@@ -176,6 +180,7 @@ class RepoManagerViewModel {
 
             if let validate = validate, !validate(url) { return }
 
+            debugLog("[DEBUG] User selected directory: \(url.path)")
             self.setDirectory(url)
             onSelected?(url)
             Task {
@@ -247,12 +252,16 @@ class RepoManagerViewModel {
             // observing first, so the updates propagate normally. (Cached rows keep showing
             // prior data meanwhile.)
             Task { @MainActor in
+                repoViewModels.forEach({ $0.isOperating = true })
                 await withTaskGroup(of: Void.self) { group in
                     for vm in self.repoViewModels {
-                        group.addTask { await vm.refresh() }
+                        // reload() (not refresh()) — refresh() no-ops while isOperating is
+                        // true, which we just set to drive the per-row spinner.
+                        group.addTask { await vm.reload() }
                     }
                 }
                 debugLog("[SUCCESS] Loaded repository information for \(self.repoViewModels.count) repos")
+                repoViewModels.forEach({ $0.isOperating = false })
             }
         } catch {
             debugLog("[ERROR] Failed to scan directory: \(error.localizedDescription)")
@@ -314,19 +323,19 @@ class RepoManagerViewModel {
     // Pull selected repositories
     @MainActor
     func pullSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.pull() }
+        await performBatch("pull", on: selectedRepositoryVMs) { await $0.pull() }
     }
 
     // Fetch selected repositories
     @MainActor
     func fetchSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.fetch() }
+        await performBatch("fetch", on: selectedRepositoryVMs) { await $0.fetch() }
     }
 
     // Recheckout selected repositories to current branch
     @MainActor
     func recheckoutCurrentBranch() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.recheckout() }
+        await performBatch("recheckout", on: selectedRepositoryVMs) { await $0.recheckout() }
     }
 
     // Load the union of local + remote branches across the selected repos so the
@@ -348,25 +357,25 @@ class RepoManagerViewModel {
     // Recheckout selected repositories to custom branch
     @MainActor
     func recheckoutToCustomBranch(_ branchName: String) async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.recheckout(toBranch: branchName) }
+        await performBatch("recheckout \(branchName)", on: selectedRepositoryVMs) { await $0.recheckout(toBranch: branchName) }
     }
 
     // Push selected repositories
     @MainActor
     func pushSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.push() }
+        await performBatch("push", on: selectedRepositoryVMs) { await $0.push() }
     }
 
     // Force-push selected repositories
     @MainActor
     func forcePushSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.forcePush() }
+        await performBatch("force-push", on: selectedRepositoryVMs) { await $0.forcePush() }
     }
 
     // Hard reset selected repositories
     @MainActor
     func hardResetSelected() async {
-        await performBatch(on: selectedRepositoryVMs) { await $0.hardReset() }
+        await performBatch("hard-reset", on: selectedRepositoryVMs) { await $0.hardReset() }
     }
 
     // Run a batch git operation over the given repo VMs with a bounded concurrency limit.
@@ -375,45 +384,58 @@ class RepoManagerViewModel {
     // drains queued work when the user hits Stop.
     @MainActor
     private func performBatch(
+        _ label: String = "operation",
         on vms: [RepoViewModel],
         _ run: @escaping (RepoViewModel) async -> OperationResult
     ) async {
         guard !vms.isEmpty else { return }
+        debugLog("[BATCH] Starting \(label) on \(vms.count) repo(s), maxConcurrent=\(maxConcurrentOperations)")
 
         isStopping = false
         isPerformingOperation = true
+        currentOperationLabel = label
         operationResults.removeAll()
 
-        await withTaskGroup(of: (Int, OperationResult).self) { group in
-            let pending = Array(vms.enumerated())
-            var activeCount = 0
-            var nextIndex = 0
+        // Run the group inside a stored Task so stopCurrentOperation() can cancel it;
+        // cancellation propagates to the child tasks and terminates their git processes.
+        let task = Task { @MainActor in
+            await withTaskGroup(of: (Int, OperationResult).self) { group in
+                let pending = Array(vms.enumerated())
+                var activeCount = 0
+                var nextIndex = 0
 
-            // Start initial batch up to maxConcurrentOperations
-            while nextIndex < pending.count && activeCount < maxConcurrentOperations && !isStopping {
-                let (index, vm) = pending[nextIndex]
-                group.addTask { (index, await run(vm)) }
-                activeCount += 1
-                nextIndex += 1
-            }
-
-            // Process results and start new tasks as slots free up
-            var results: [(Int, OperationResult)] = []
-            for await (index, result) in group {
-                results.append((index, result))
-                activeCount -= 1
-                if nextIndex < pending.count && !isStopping {
-                    let (idx, vm) = pending[nextIndex]
-                    group.addTask { (idx, await run(vm)) }
+                // Start initial batch up to maxConcurrentOperations
+                while nextIndex < pending.count && activeCount < maxConcurrentOperations && !isStopping {
+                    let (index, vm) = pending[nextIndex]
+                    group.addTask { (index, await run(vm)) }
                     activeCount += 1
                     nextIndex += 1
                 }
-            }
 
-            self.operationResults = results.sorted { $0.0 < $1.0 }.map { $0.1 }
+                // Process results and start new tasks as slots free up
+                var results: [(Int, OperationResult)] = []
+                for await (index, result) in group {
+                    results.append((index, result))
+                    activeCount -= 1
+                    if nextIndex < pending.count && !isStopping {
+                        let (idx, vm) = pending[nextIndex]
+                        group.addTask { (idx, await run(vm)) }
+                        activeCount += 1
+                        nextIndex += 1
+                    }
+                }
+
+                self.operationResults = results.sorted { $0.0 < $1.0 }.map { $0.1 }
+            }
         }
+        operationTask = task
+        await task.value
+        operationTask = nil
 
         isPerformingOperation = false
+        currentOperationLabel = ""
+        let failures = operationResults.filter { !$0.success }.count
+        debugLog("[BATCH] Finished \(label): \(operationResults.count - failures) succeeded, \(failures) failed\(isStopping ? " (stopped early)" : "")")
         if !isStopping && self.operationResults.contains(where: { !$0.success }) {
             showingResults = true
         }
@@ -429,7 +451,9 @@ class RepoManagerViewModel {
     // Stop the current batch operation (lets running tasks finish, skips queued ones)
     func stopCurrentOperation() {
         guard isPerformingOperation else { return }
+        debugLog("[BATCH] Stop requested by user — cancelling in-flight operations")
         isStopping = true
+        operationTask?.cancel()
     }
 
     // MARK: - xcode-specific operations

@@ -25,9 +25,12 @@ struct CommitMessageEditor: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let tv = scrollView.documentView as? NSTextView else { return }
-        // Never touch the text storage while the user is actively typing — causes out-of-bounds crash
-        guard !context.coordinator.isEditing else { return }
-        if tv.string != text { tv.string = text }
+        guard tv.string != text else { return }
+        // Don't fight the user's live typing by rewriting the storage mid-edit (causes
+        // out-of-bounds crashes) — except for a programmatic clear (e.g. after a commit),
+        // which resets to empty and is always safe to apply even while focused.
+        guard !context.coordinator.isEditing || text.isEmpty else { return }
+        tv.string = text
     }
 
     class Coordinator: NSObject, NSTextViewDelegate {
