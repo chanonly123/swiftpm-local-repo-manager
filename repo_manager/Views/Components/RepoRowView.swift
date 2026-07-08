@@ -111,14 +111,6 @@ struct RepoRowView: View {
                 .help("\(operation.rawValue) in progress — use the git menu to continue or abort")
             }
 
-            // Last operation error (single-repo ops) — hover for details
-            if let error = vm.lastOperationError {
-                Image(systemName: "exclamationmark.octagon.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.red)
-                    .help(error)
-            }
-
             Spacer()
 
             // Xcode tasks menu (only when this repo contains Xcode projects)
@@ -219,6 +211,12 @@ struct RepoRowView: View {
         )
         .cornerRadius(4)
         .opacity(vm.isOperating ? 0.8 : 1.0)
+        .contentShape(Rectangle())
+        // Double-click anywhere on the row opens the diff & history window.
+        .onTapGesture(count: 2) {
+            guard repo.status != .loading else { return }
+            DiffWindowManager.open(for: vm)
+        }
         .sheet(isPresented: $showNewBranchSheet) {
             NewBranchSheet(vm: vm)
         }

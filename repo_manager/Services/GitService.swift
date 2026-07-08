@@ -317,6 +317,12 @@ actor GitService {
         return "✓ Squashed \(count) commits"
     }
 
+    // Stash only the given paths (tracked changes + any untracked among them).
+    nonisolated func stashFiles(at repoURL: URL, paths: [String]) async throws -> String {
+        _ = try await runGitCommand(args: ["stash", "push", "--include-untracked", "--"] + paths, at: repoURL)
+        return "✓ Stashed \(paths.count) file(s)"
+    }
+
     // Apply a stash without removing it
     nonisolated func applyStash(at repoURL: URL, ref: String) async throws -> String {
         try await runGitCommand(args: ["stash", "apply", ref], at: repoURL)

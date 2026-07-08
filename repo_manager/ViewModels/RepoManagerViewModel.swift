@@ -12,8 +12,6 @@ class RepoManagerViewModel {
     var currentOperationLabel = ""
     var currentDirectory: URL?
     var operationResults: [OperationResult] = []
-    var showingResults = false
-    var errorMessage: String?
     var maxConcurrentOperations = 4
     var showingRecheckoutMenu = false
     var customBranchInput = ""
@@ -23,6 +21,10 @@ class RepoManagerViewModel {
     var showingCleanConfirmation = false
     var showingForcePushConfirmation = false
     var xcodeProjects: [XcodeProject] = []
+    // Tab-wide banners (scan failures etc.); the tab's banner stack also shows each repo's own.
+    var tabBanners: [BannerItem] = []
+    // True only for the tab currently shown, so FSEvents monitoring runs for the active tab only.
+    private(set) var isActiveTab = false
     private(set) var isStopping = false
     // The running batch, held so Stop can cancel it (which terminates in-flight git processes).
     private var operationTask: Task<Void, Never>?
@@ -61,6 +63,38 @@ class RepoManagerViewModel {
         repoViewModels.contains { $0.repo.status == .loading }
     }
 
+    // Tab-wide banner stack: tab-level notices plus every repo's own banners (newest last).
+    @MainActor var banners: [BannerItem] {
+        tabBanners + repoViewModels.flatMap(\.banners)
+    }
+
+    @MainActor func addBanner(_ message: String) {
+        tabBanners.append(BannerItem(message: message))
+    }
+
+    @MainActor func dismissBanner(_ id: UUID) {
+        tabBanners.removeAll { $0.id == id }
+        repoViewModels.forEach { $0.dismissBanner(id) }
+    }
+
+    @MainActor func dismissAllBanners() {
+        tabBanners.removeAll()
+        repoViewModels.forEach { $0.banners.removeAll() }
+    }
+
+    // MARK: - Active tab (FSEvents runs for the shown tab only)
+
+    @MainActor func activate() {
+        isActiveTab = true
+        fsEventsMonitor.resume()
+        Task { @MainActor in await refreshAllRepositoryStatuses() }
+    }
+
+    @MainActor func deactivate() {
+        isActiveTab = false
+        fsEventsMonitor.pause()
+    }
+
     // Xcode projects located inside a specific repository
     func xcodeProjects(for repo: GitRepo) -> [XcodeProject] {
         let repoPrefix = repo.url.path.hasSuffix("/") ? repo.url.path : repo.url.path + "/"
@@ -80,6 +114,8 @@ class RepoManagerViewModel {
             object: nil, queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            // Only the active tab resumes monitoring — background tabs stay paused.
+            guard self.isActiveTab else { return }
             self.fsEventsMonitor.resume()
             Task { @MainActor [weak self] in
                 await self?.refreshAllRepositoryStatuses()
@@ -210,7 +246,6 @@ class RepoManagerViewModel {
         // Only show the full-screen scanning state on a cold scan (nothing displayed yet).
         // A re-scan keeps the existing rows visible and updates them in place.
         isScanning = repoViewModels.isEmpty
-        errorMessage = nil
 
         do {
             // Scan for git repositories
@@ -266,7 +301,7 @@ class RepoManagerViewModel {
             }
         } catch {
             debugLog("[ERROR] Failed to scan directory: \(error.localizedDescription)")
-            errorMessage = "Failed to scan directory: \(error.localizedDescription)"
+            addBanner("Failed to scan directory: \(error.localizedDescription)")
             isScanning = false
         }
     }
@@ -280,6 +315,9 @@ class RepoManagerViewModel {
                 await self?.handleFileSystemChange(at: repoURL)
             }
         }
+        // A background tab scans (e.g. bookmark restore) but must not emit change events
+        // until it becomes the active tab.
+        if !isActiveTab { fsEventsMonitor.pause() }
     }
 
     // Handle file system change for a specific repository
@@ -443,16 +481,8 @@ class RepoManagerViewModel {
         currentOperationLabel = ""
         let failures = operationResults.filter { !$0.success }.count
         debugLog("[BATCH] Finished \(label): \(operationResults.count - failures) succeeded, \(failures) failed\(isStopping ? " (stopped early)" : "")")
-        if !isStopping && self.operationResults.contains(where: { !$0.success }) {
-            showingResults = true
-        }
+        // Per-repo failures already surface as banners (via each VM's perform()); no results sheet.
         isStopping = false
-    }
-
-    // Clear operation results
-    func clearResults() {
-        operationResults.removeAll()
-        showingResults = false
     }
 
     // Stop the current batch operation (lets running tasks finish, skips queued ones)
@@ -469,7 +499,7 @@ class RepoManagerViewModel {
     @MainActor
     func addLocalDependencies(to project: XcodeProject) async {
         guard let directory = currentDirectory else {
-            errorMessage = "No directory selected"
+            addBanner("No directory selected")
             return
         }
 
@@ -484,12 +514,11 @@ class RepoManagerViewModel {
             )
 
             debugLog("[SUCCESS] Added \(result.success)/\(result.total) module references to \(project.name)")
-            errorMessage = nil
 
             operationResults = []
         } catch {
             debugLog("[ERROR] Failed to add local dependencies: \(error.localizedDescription)")
-            errorMessage = "Failed to add dependencies: \(error.localizedDescription)"
+            addBanner("Failed to add dependencies: \(error.localizedDescription)")
         }
 
         isPerformingOperation = false
@@ -503,10 +532,9 @@ class RepoManagerViewModel {
         do {
             let count = try await repoService.removeLocalDependencies(project: project)
             debugLog("[SUCCESS] Removed \(count) local dependency references from \(project.name)")
-            errorMessage = nil
         } catch {
             debugLog("[ERROR] Failed to remove local dependencies: \(error.localizedDescription)")
-            errorMessage = "Failed to remove dependencies: \(error.localizedDescription)"
+            addBanner("Failed to remove dependencies: \(error.localizedDescription)")
         }
         isPerformingOperation = false
     }
@@ -522,12 +550,11 @@ class RepoManagerViewModel {
 
             let status = result.enabled ? "Enabled" : "Disabled"
             debugLog("[SUCCESS] \(status) \(result.count) run script(s)")
-            errorMessage = nil
 
             operationResults = []
         } catch {
             debugLog("[ERROR] Failed to toggle run scripts: \(error.localizedDescription)")
-            errorMessage = "Failed to toggle run scripts: \(error.localizedDescription)"
+            addBanner("Failed to toggle run scripts: \(error.localizedDescription)")
         }
 
         isPerformingOperation = false

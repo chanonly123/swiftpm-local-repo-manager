@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 
+@MainActor
 @Observable
 class TabsManager {
     var tabs: [WorkspaceTab] = []
@@ -30,13 +31,15 @@ class TabsManager {
     func addTab() {
         let newTab = WorkspaceTab(name: "Untitled")
         tabs.append(newTab)
-        selectedTabID = newTab.id
         viewModels[newTab.id] = RepoManagerViewModel()
-        saveTabs()
+        selectTab(newTab.id)
     }
 
+    // Selecting a tab makes it the only one monitoring the filesystem (FSEvents).
     func selectTab(_ id: UUID) {
+        for (tabID, vm) in viewModels where tabID != id { vm.deactivate() }
         selectedTabID = id
+        viewModels[id]?.activate()
         saveTabs()
     }
 
@@ -44,17 +47,23 @@ class TabsManager {
         // Don't close if it's the only tab
         guard tabs.count > 1 else { return }
 
-        // If closing the selected tab, select another one
-        if selectedTabID == id {
-            if let index = tabs.firstIndex(where: { $0.id == id }) {
-                let nextIndex = index > 0 ? index - 1 : 1
-                selectedTabID = tabs[nextIndex].id
-            }
+        let wasSelected = selectedTabID == id
+        var nextSelected = selectedTabID
+        if wasSelected, let index = tabs.firstIndex(where: { $0.id == id }) {
+            let nextIndex = index > 0 ? index - 1 : 1
+            nextSelected = tabs[nextIndex].id
         }
 
+        viewModels[id]?.deactivate()
         tabs.removeAll { $0.id == id }
         viewModels.removeValue(forKey: id)
-        saveTabs()
+
+        // Activate the newly-selected tab so it starts monitoring.
+        if wasSelected, let nextSelected {
+            selectTab(nextSelected)
+        } else {
+            saveTabs()
+        }
     }
 
     func updateTabName(_ id: UUID, name: String) {
@@ -167,6 +176,9 @@ class TabsManager {
             viewModels[initialTab.id] = RepoManagerViewModel()
             saveTabs()
         }
+
+        // Only the restored/selected tab monitors the filesystem; the rest stay paused.
+        if let selectedTabID { viewModels[selectedTabID]?.activate() }
     }
 
     private func saveTabs() {

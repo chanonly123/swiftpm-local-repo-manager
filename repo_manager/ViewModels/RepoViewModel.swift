@@ -21,8 +21,14 @@ final class RepoViewModel: Identifiable {
     // Push as the primary action; cleared once a push/force-push lands. Session-only — not
     // persisted, resets to false on relaunch.
     @MainActor var needsForcePush: Bool = false
-    // Last single-op failure, shown inline on the row until the next op clears it.
-    var lastOperationError: String?
+    // Operation failures for this repo, shown in the top-right banner stack (row + diff
+    // window). Never auto-cleared — the user dismisses each banner explicitly.
+    @MainActor var banners: [BannerItem] = []
+    // Diff-window changed-files selection, kept on the VM so it survives closing/reopening the
+    // window (session-only). `knownFilePaths` remembers every path we've seen so a reopen
+    // restores the saved checkbox state instead of re-checking everything.
+    @MainActor var checkedPaths: Set<String> = []
+    @MainActor var knownFilePaths: Set<String> = []
     // Bumps on every refresh / operation. Detached observers (the diff window) watch this to
     // know the repo changed — GitRepo's Equatable only compares url, so `.onChange(of: repo)`
     // wouldn't fire on a status/branch change.
@@ -57,17 +63,26 @@ final class RepoViewModel: Identifiable {
         debugLog("[DEBUG] refresh \(repo.name): \(old) -> \(repo.status.displayText) branch=\(repo.currentBranch ?? "nil") token=\(changeToken)")
     }
 
+    // MARK: - Banners
+
+    @MainActor func addBanner(_ message: String) {
+        banners.append(BannerItem(message: message, repoName: repo.name))
+    }
+
+    @MainActor func dismissBanner(_ id: UUID) {
+        banners.removeAll { $0.id == id }
+    }
+
     // MARK: - Operations
 
     // Runs a git command, records success/failure as an OperationResult (for batch
-    // aggregation), reloads the repo, and surfaces any error inline via lastOperationError.
+    // aggregation), reloads the repo, and surfaces any failure as a dismissable banner.
     @MainActor
     private func perform(
         _ operation: OperationResult.GitOperation,
         _ action: (GitRepo) async throws -> String
     ) async -> OperationResult {
         isOperating = true
-        lastOperationError = nil
         let snapshot = repo
         let result: OperationResult
         do {
@@ -83,7 +98,7 @@ final class RepoViewModel: Identifiable {
             )
         } catch {
             debugLog("[ERROR] \(operation.rawValue) failed for: \(snapshot.name): \(error.localizedDescription)")
-            lastOperationError = error.localizedDescription
+            banners.append(BannerItem(message: "\(operation.rawValue) failed: \(error.localizedDescription)", repoName: snapshot.name))
             result = OperationResult(
                 repoName: "\(snapshot.name) (\(snapshot.url.path))",
                 operation: operation,
