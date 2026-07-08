@@ -15,7 +15,6 @@ struct DiffWindowView: View {
     @State private var loadingFiles = true
     @State private var loadingDiff = false
     @State private var tooLarge = false
-    @State private var checkedPaths: Set<String> = []
     @State private var commitMessage = ""
     @State private var isCommitting = false
     @State private var commitError: String?
@@ -59,6 +58,13 @@ struct DiffWindowView: View {
             branchOpsBar
         }
         .frame(minWidth: 700, minHeight: 450)
+        .overlay(alignment: .topTrailing) {
+            BannerStackView(
+                banners: vm.banners,
+                onDismiss: { vm.dismissBanner($0) },
+                onDismissAll: { vm.banners.removeAll() }
+            )
+        }
         .background(DiffWindowAccessor { window in
             hostWindow = window
             window.title = DiffWindowManager.title(for: repo)
@@ -228,13 +234,6 @@ struct DiffWindowView: View {
                     .disabled(vm.isOperating)
             }
 
-            if let error = vm.lastOperationError {
-                Image(systemName: "exclamationmark.octagon.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.red)
-                    .help(error)
-            }
-
             Spacer()
         }
         .padding(.horizontal, 10)
@@ -360,14 +359,14 @@ struct DiffWindowView: View {
     }
 
     private var allFilesChecked: Bool {
-        !files.isEmpty && files.allSatisfy { checkedPaths.contains($0.id) }
+        !files.isEmpty && files.allSatisfy { vm.checkedPaths.contains($0.id) }
     }
 
     private func toggleAllChecked() {
         if allFilesChecked {
-            checkedPaths.removeAll()
+            vm.checkedPaths.removeAll()
         } else {
-            checkedPaths = Set(files.map { $0.id })
+            vm.checkedPaths = Set(files.map { $0.id })
         }
     }
 
@@ -404,7 +403,10 @@ struct DiffWindowView: View {
         } else {
             List(selection: $selectedCommits) {
                 ForEach(commits) { commit in
-                    commitRow(commit).tag(commit.id)
+                    VStack(spacing: 0) {
+                        commitRow(commit).tag(commit.id)
+                        Divider()
+                    }
                 }
                 if hasMoreCommits {
                     HStack {
@@ -444,7 +446,10 @@ struct DiffWindowView: View {
         } else {
             List(selection: $selectedStash) {
                 ForEach(stashes) { stash in
-                    stashRow(stash).tag(stash.id)
+                    VStack(spacing: 0) {
+                        stashRow(stash).tag(stash.id)
+                        Divider()
+                    }
                 }
             }
             .listStyle(.sidebar)
@@ -684,13 +689,20 @@ struct DiffWindowView: View {
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCommitting || checkedPaths.isEmpty)
+                    .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCommitting || vm.checkedPaths.isEmpty)
+
+                    Button(action: { Task { await stashSelectedFiles() } }) {
+                        Label("Stash", systemImage: "tray.and.arrow.down")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .disabled(isCommitting || vm.checkedPaths.isEmpty)
+                    .help("Stash the checked files")
 
                     Button(action: { Task { await createSelectedFilesDiff() } }) {
                         Label("Create Diff", systemImage: "doc.badge.plus")
                             .font(.system(size: 12, weight: .medium))
                     }
-                    .disabled(checkedPaths.isEmpty)
+                    .disabled(vm.checkedPaths.isEmpty)
                     .help("Save a diff of the checked files")
                 }
             }
@@ -702,10 +714,10 @@ struct DiffWindowView: View {
     private func fileRow(_ entry: FileEntry) -> some View {
         HStack(spacing: 6) {
             Toggle("", isOn: Binding(
-                get: { checkedPaths.contains(entry.id) },
+                get: { vm.checkedPaths.contains(entry.id) },
                 set: { checked in
-                    if checked { checkedPaths.insert(entry.id) }
-                    else { checkedPaths.remove(entry.id) }
+                    if checked { vm.checkedPaths.insert(entry.id) }
+                    else { vm.checkedPaths.remove(entry.id) }
                 }
             ))
             .toggleStyle(.checkbox)
@@ -718,9 +730,10 @@ struct DiffWindowView: View {
                 .frame(width: 14, height: 14)
                 .background(badgeColor(entry.status))
                 .clipShape(RoundedRectangle(cornerRadius: 2))
-            Text(entry.fileName)
+            Text(entry.path)
                 .font(.system(size: 12))
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .help(entry.path)
 
             // Right: conflict/clean tick — only for files that came in as a conflict.
@@ -827,7 +840,7 @@ struct DiffWindowView: View {
 
     private func performCommit() async {
         let message = commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        let paths = files.filter { checkedPaths.contains($0.id) }.map { $0.path }
+        let paths = files.filter { vm.checkedPaths.contains($0.id) }.map { $0.path }
         guard !message.isEmpty, !paths.isEmpty else { return }
         isCommitting = true
         commitError = nil
@@ -839,7 +852,7 @@ struct DiffWindowView: View {
             debugLog("[COMMIT] \(repo.name): committed \(paths.count) file(s)")
             // Keep the window open — clear the composer and refresh in place.
             commitMessage = ""
-            checkedPaths.removeAll()
+            vm.checkedPaths.removeAll()
             vm.isOperating = false // release before refreshing so refresh() isn't skipped
             await vm.refresh()
             await loadFiles()
@@ -867,7 +880,6 @@ struct DiffWindowView: View {
         defer { loadingFiles = false }
         do {
             let raw = try await git.getChangedFiles(at: repo.url)
-            let previousIDs = Set(files.map { $0.id })
             files = raw.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
             let currentIDs = Set(files.map { $0.id })
             // While any file is in a conflict state, check which still have leftover
@@ -876,9 +888,12 @@ struct DiffWindowView: View {
             unresolvedConflicts = files.contains(where: { isConflict($0.status) })
                 ? (try? await git.unresolvedConflictPaths(at: repo.url)) ?? []
                 : []
-            // Preserve the user's checkbox choices; auto-check only newly-appeared files
-            let appeared = currentIDs.subtracting(previousIDs)
-            checkedPaths = checkedPaths.intersection(currentIDs).union(appeared)
+            // Persist the checkbox selection on the VM so it survives closing/reopening the
+            // window. Auto-check only files we've never seen before (genuinely new, incl. the
+            // first-ever load which checks everything); keep the user's choices otherwise.
+            let appeared = currentIDs.subtracting(vm.knownFilePaths)
+            vm.checkedPaths = vm.checkedPaths.intersection(currentIDs).union(appeared)
+            vm.knownFilePaths.formUnion(currentIDs)
             // Only auto-select the first file on the initial load (nothing selected yet).
             if selectedPath == nil && selectedCommits.isEmpty {
                 selectedPath = files.first?.id
@@ -1082,11 +1097,30 @@ struct DiffWindowView: View {
         saveDiff(patch, suggestedName: name)
     }
 
+    // Stash the checked files (tracked changes + untracked among them).
+    private func stashSelectedFiles() async {
+        let paths = files.filter { vm.checkedPaths.contains($0.id) }.map { $0.path }
+        guard !paths.isEmpty else { return }
+        vm.isOperating = true
+        do {
+            _ = try await git.stashFiles(at: repo.url, paths: paths)
+            debugLog("[STASH] \(repo.name): stashed \(paths.count) file(s)")
+            vm.isOperating = false
+            await vm.refresh()
+            await loadFiles()
+            await loadStashes()
+        } catch {
+            vm.isOperating = false
+            vm.addBanner("Stash failed: \(error.localizedDescription)")
+            debugLog("[ERROR] \(repo.name): stash failed — \(error.localizedDescription)")
+        }
+    }
+
     // Combined patch of the currently checked working-tree files (the same set the Commit
     // button would stage). Tracked files diff against HEAD; untracked files diff against
     // /dev/null so their full content is captured.
     private func createSelectedFilesDiff() async {
-        let selected = files.filter { checkedPaths.contains($0.id) }
+        let selected = files.filter { vm.checkedPaths.contains($0.id) }
         guard !selected.isEmpty else { return }
         var parts: [String] = []
         for entry in selected {
@@ -1141,14 +1175,13 @@ struct DiffWindowView: View {
         vm.isOperating = true // suppress FSEvents refreshes while this write runs
         do {
             _ = try await git.applyPatch(at: repo.url, patchPath: url.path)
-            vm.lastOperationError = nil
             debugLog("[SUCCESS] Applied patch \(url.lastPathComponent) to \(repo.name)")
             vm.isOperating = false // release before refreshing so refresh() isn't skipped
             await vm.refresh()
             await loadFiles()
         } catch {
             vm.isOperating = false
-            vm.lastOperationError = "Apply patch failed: \(error.localizedDescription)"
+            vm.addBanner("Apply patch failed: \(error.localizedDescription)")
             debugLog("[ERROR] Apply patch failed: \(error.localizedDescription)")
         }
     }

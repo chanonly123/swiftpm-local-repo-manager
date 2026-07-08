@@ -125,20 +125,12 @@ struct TabContentView: View {
                 .padding()
                 .background(Color(nsColor: .controlBackgroundColor))
         }
-        .sheet(isPresented: $viewModel.showingResults) {
-            OperationResultsView(
-                results: viewModel.operationResults,
-                onClose: viewModel.clearResults
+        .overlay(alignment: .topTrailing) {
+            BannerStackView(
+                banners: viewModel.banners,
+                onDismiss: { viewModel.dismissBanner($0) },
+                onDismissAll: { viewModel.dismissAllBanners() }
             )
-        }
-        .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
-            Button("OK") {
-                viewModel.errorMessage = nil
-            }
-        } message: {
-            if let error = viewModel.errorMessage {
-                Text(error)
-            }
         }
         .sheet(isPresented: $viewModel.showingRecheckoutMenu) {
             recheckoutMenuView
@@ -180,7 +172,7 @@ struct TabContentView: View {
                 do {
                     try AppUpdater.updateAndRestart()
                 } catch {
-                    viewModel.errorMessage = error.localizedDescription
+                    viewModel.addBanner(error.localizedDescription)
                 }
             }
         } message: {
@@ -237,6 +229,7 @@ extension TabContentView {
                             Task { await viewModel.toggleRunScripts(for: project) }
                         }
                     )
+                    Divider()
                 }
             }
             .padding(8)
@@ -246,16 +239,7 @@ extension TabContentView {
     // MARK: - Bottom Bar
     private var bottomBar: some View {
         HStack {
-            Button(action: { showingReportIssue = true }) {
-                Label("Report Issue", systemImage: "exclamationmark.bubble")
-            }
-            .help("Report a problem and share your logs")
-            
-            updateButton
-
-            scanButton
-
-            // Selection control — single checkbox toggles select / deselect all
+            // Selection control — single checkbox toggles select / deselect all (far left)
             Toggle(isOn: Binding(
                 get: { viewModel.allSelected },
                 set: { _ in viewModel.toggleSelectAll() }
@@ -266,6 +250,15 @@ extension TabContentView {
             }
             .toggleStyle(.checkbox)
             .disabled(viewModel.repoViewModels.isEmpty)
+
+            Button(action: { showingReportIssue = true }) {
+                Label("Report Issue", systemImage: "exclamationmark.bubble")
+            }
+            .help("Report a problem and share your logs")
+
+            updateButton
+
+            scanButton
 
             Spacer()
 
