@@ -1,12 +1,12 @@
 import Foundation
 import SwiftUI
+import Combine
 
 @MainActor
-@Observable
-class TabsManager {
-    var tabs: [WorkspaceTab] = []
-    var selectedTabID: UUID?
-    var viewModels: [UUID: RepoManagerViewModel] = [:]
+class TabsManager: ObservableObject {
+    @Published var tabs: [WorkspaceTab] = []
+    @Published var selectedTabID: UUID?
+    @Published var viewModels: [UUID: RepoManagerViewModel] = [:]
 
     private let userDefaults = UserDefaults.standard
     private let tabsKey = "workspaceTabs"
@@ -92,9 +92,9 @@ class TabsManager {
 
     // MARK: - Version Check
 
-    var newVersion: String?
-    var newVersionDesc: String?
-    var newVersionAlert: Bool = false
+    @Published var newVersion: String?
+    @Published var newVersionDesc: String?
+    @Published var newVersionAlert: Bool = false
 
     /// True once a newer published version has been detected. Unlike
     /// `newVersionAlert`, this stays set after the alert is dismissed so the

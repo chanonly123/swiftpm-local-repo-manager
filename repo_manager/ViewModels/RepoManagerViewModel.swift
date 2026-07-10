@@ -1,32 +1,32 @@
 import Foundation
 import SwiftUI
+import Combine
 
 @MainActor
-@Observable
-class RepoManagerViewModel {
+class RepoManagerViewModel: ObservableObject {
     // One RepoViewModel per discovered repo — each is the single source of truth for its repo
     // and is shared by reference into the row / sheets / diff window.
-    var repoViewModels: [RepoViewModel] = []
-    var isScanning = false
-    var isPerformingOperation = false
+    @Published var repoViewModels: [RepoViewModel] = []
+    @Published var isScanning = false
+    @Published var isPerformingOperation = false
     // Human-readable label of the batch operation currently running, shown in the toolbar.
-    var currentOperationLabel = ""
-    var currentDirectory: URL?
-    var operationResults: [OperationResult] = []
-    var maxConcurrentOperations = 4
-    var showingRecheckoutMenu = false
-    var customBranchInput = ""
+    @Published var currentOperationLabel = ""
+    @Published var currentDirectory: URL?
+    @Published var operationResults: [OperationResult] = []
+    @Published var maxConcurrentOperations = 4
+    @Published var showingRecheckoutMenu = false
+    @Published var customBranchInput = ""
     // Union of branches across the selected repos, shown in the recheckout popup
-    var recheckoutBranches: [String] = []
-    var showingHardResetConfirmation = false
-    var showingCleanConfirmation = false
-    var showingForcePushConfirmation = false
-    var xcodeProjects: [XcodeProject] = []
+    @Published var recheckoutBranches: [String] = []
+    @Published var showingHardResetConfirmation = false
+    @Published var showingCleanConfirmation = false
+    @Published var showingForcePushConfirmation = false
+    @Published var xcodeProjects: [XcodeProject] = []
     // Tab-wide banners (scan failures etc.); the tab's banner stack also shows each repo's own.
-    var tabBanners: [BannerItem] = []
+    @Published var tabBanners: [BannerItem] = []
     // True only for the tab currently shown, so FSEvents monitoring runs for the active tab only.
-    private(set) var isActiveTab = false
-    private(set) var isStopping = false
+    @Published private(set) var isActiveTab = false
+    @Published private(set) var isStopping = false
     // The running batch, held so Stop can cancel it (which terminates in-flight git processes).
     private var operationTask: Task<Void, Never>?
 

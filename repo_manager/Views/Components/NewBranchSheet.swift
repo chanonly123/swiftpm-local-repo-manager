@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Branch switch / create sheet
 
 struct NewBranchSheet: View {
-    @Bindable var vm: RepoViewModel
+    @ObservedObject var vm: RepoViewModel
 
     private var repo: GitRepo { vm.repo }
 

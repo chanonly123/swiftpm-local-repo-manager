@@ -4,8 +4,8 @@ import AppKit
 struct DiffWindowView: View {
     // Shared with the row/sheets — the single source of truth for this repo. The window
     // observes it directly (no NotificationCenter) and refreshes it after its own commits.
-    // @Bindable so the view re-renders on the VM's observable changes.
-    @Bindable var vm: RepoViewModel
+    // @ObservedObject so the view re-renders on the VM's observable changes.
+    @ObservedObject var vm: RepoViewModel
 
     private var repo: GitRepo { vm.repo }
 

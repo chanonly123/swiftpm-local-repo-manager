@@ -2,7 +2,6 @@ import Foundation
 import AsyncFileMonitor
 
 /// Wrapper around AsyncFileMonitor for monitoring git repository changes
-@Observable
 class FSEventsMonitor {
     private var monitoringTask: Task<Void, Never>?
     private var callback: ((URL) -> Void)?
