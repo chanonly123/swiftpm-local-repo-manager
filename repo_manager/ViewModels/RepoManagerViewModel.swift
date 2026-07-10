@@ -285,13 +285,14 @@ class RepoManagerViewModel {
             // Start monitoring all repositories for file system changes
             startMonitoringRepositories()
 
-            // Refresh every repo silently, in its own task rather than awaited inline. On a
-            // cold launch via bookmark restore, awaiting here mutates the VMs during app
-            // startup — before SwiftUI commits its first render of the just-populated list —
-            // so those invalidations are dropped and rows stay stuck on the .loading
-            // placeholder until a forced re-render. Deferring lets the rows render and start
-            // observing first, so the updates propagate normally. (Cached rows keep showing
-            // prior data meanwhile.)
+            // Refresh every repo silently, in its own task rather than awaited inline. Rows
+            // update via per-row observation of `vm.repo` — but on a cold launch via bookmark
+            // restore the reload can land before SwiftUI has committed the rows' first render,
+            // so no row has subscribed yet and those per-row invalidations are dropped. To
+            // deliver the loaded state reliably regardless of that timing, we reassign the
+            // observed `repoViewModels` array once the batch finishes: that invalidates the
+            // parent list, which rebuilds every row against its now-updated VM. Steady-state
+            // single-repo updates (git ops, FSEvents) still flow through per-row observation.
             Task { @MainActor in
                 repoViewModels.forEach({ $0.isOperating = true })
                 await withTaskGroup(of: Void.self) { group in
@@ -303,6 +304,9 @@ class RepoManagerViewModel {
                 }
                 debugLog("[SUCCESS] Loaded repository information for \(self.repoViewModels.count) repos")
                 repoViewModels.forEach({ $0.isOperating = false })
+                // Catch-up re-render for the cold-launch race described above (no-op cost in the
+                // common case where rows already subscribed and updated themselves live).
+                self.repoViewModels = self.repoViewModels.sorted { $0.repo.name < $1.repo.name }
             }
         } catch {
             debugLog("[ERROR] Failed to scan directory: \(error.localizedDescription)")
@@ -433,6 +437,13 @@ class RepoManagerViewModel {
         isPerformingOperation = true
         currentOperationLabel = label
         operationResults.removeAll()
+
+        // Pause filesystem monitoring for the whole batch: the operations churn working-tree
+        // files, which would otherwise fire debounced status refreshes that spawn a burst of
+        // git subprocesses contending with the in-flight operations. Each operated repo is
+        // reloaded by its own perform() anyway, so nothing is missed. Resumed in the `defer`.
+        fsEventsMonitor.suspendForOperation()
+        defer { fsEventsMonitor.resumeAfterOperation() }
 
         // Run the group inside a stored Task so stopCurrentOperation() can cancel it;
         // cancellation propagates to the child tasks and terminates their git processes.
