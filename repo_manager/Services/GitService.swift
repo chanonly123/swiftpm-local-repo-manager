@@ -604,37 +604,39 @@ actor GitService {
             do {
                 try process.run()
 
-                // Drain stdout/stderr *while* the process runs. Reading only after the
-                // process exits deadlocks when output exceeds the OS pipe buffer (~64KB):
-                // the child blocks writing to the full pipe and never exits. A newly
-                // added file's full-content diff easily crosses that threshold. The
-                // `timeout` (which terminates the process to unblock the reads) guards
-                // against a genuinely hung git; the cancellation task below reacts to Stop.
-                let pipes: (Data, Data)? = await withTaskGroup(of: (Data, Data)?.self) { group in
-                    group.addTask {
-                        let out = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
-                        let err = (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
-                        return (out, err)
-                    }
-                    group.addTask {
-                        // Wakes on either the timeout elapsing or task cancellation (sleep
-                        // throws), then terminates git so the reader hits EOF and returns.
-                        try? await Task.sleep(for: timeout)
-                        if process.isRunning { process.terminate() }
-                        return nil
-                    }
-                    let result = await group.next() ?? nil
-                    group.cancelAll()
-                    return result
+                // Terminate the process after `timeout` so a genuinely hung git unblocks the
+                // reads below. Runs as a lightweight timer task; because the draining no longer
+                // occupies cooperative-pool workers (see readPipeToEnd), this can always fire.
+                let timeoutTask = Task {
+                    try? await Task.sleep(for: timeout)
+                    if process.isRunning { process.terminate() }
                 }
+                defer { timeoutTask.cancel() }
 
-                guard let (outputData, errorData) = pipes else {
+                // Drain stdout and stderr *concurrently* and *off the Swift cooperative pool*:
+                //  1. Reading stdout fully and only then stderr deadlocks when git fills the
+                //     stderr pipe buffer (~64KB) while we're still blocked on stdout — git blocks
+                //     writing stderr and never closes stdout. Reading both at once avoids it.
+                //  2. FileHandle.readToEnd() blocks its thread until EOF. On the cooperative
+                //     pool, a batch of concurrent git commands parks every worker in a blocked
+                //     read — starving even the timeout task meant to rescue them, so nothing ever
+                //     unblocks. readPipeToEnd runs the blocking read on Dispatch's global pool
+                //     (which grows on demand) instead.
+                async let outFuture = self.readPipeToEnd(outputPipe.fileHandleForReading)
+                async let errFuture = self.readPipeToEnd(errorPipe.fileHandleForReading)
+                let outputData = await outFuture
+                let errorData = await errFuture
+
+                process.waitUntilExit()
+                timeoutTask.cancel()
+
+                // A process we terminated ourselves (timeout or Stop) exits via an uncaught
+                // signal — surface that rather than a misleading non-zero exit.
+                if process.terminationReason == .uncaughtSignal {
                     let reason = Task.isCancelled ? "cancelled" : "timed out after \(timeout)"
                     debugLog("[ERROR] \(repoName) \(reason): \(command)")
                     throw GitServiceError.commandFailed("Git command \(reason)")
                 }
-
-                process.waitUntilExit()
 
                 let output = String(data: outputData, encoding: .utf8) ?? ""
                 let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
@@ -654,6 +656,20 @@ actor GitService {
             }
         } onCancel: {
             if process.isRunning { process.terminate() }
+        }
+    }
+
+    /// Read a file handle to EOF on Dispatch's global pool rather than the Swift cooperative
+    /// thread pool. `readToEnd()` blocks its thread until EOF, and blocking a cooperative worker
+    /// is unsafe: a batch of concurrent git commands would park every worker — and the timeout
+    /// task meant to rescue a hung read — in a blocked call, deadlocking the whole batch. The
+    /// global pool grows on demand, so it can't be starved this way.
+    private nonisolated func readPipeToEnd(_ handle: FileHandle) async -> Data {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let data = (try? handle.readToEnd()) ?? Data()
+                continuation.resume(returning: data)
+            }
         }
     }
 

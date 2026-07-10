@@ -438,7 +438,14 @@ class RepoManagerViewModel {
         // git subprocesses contending with the in-flight operations. Each operated repo is
         // reloaded by its own perform() anyway, so nothing is missed. Resumed in the `defer`.
         fsEventsMonitor.suspendForOperation()
-        defer { fsEventsMonitor.resumeAfterOperation() }
+        // Suppress each operation's own post-op reload for the duration of the batch: running
+        // `git status` on one repo while others are still being written was hanging multi-repo
+        // operations. The operated repos are reloaded once, below, after all writes finish.
+        vms.forEach { $0.deferReload = true }
+        defer {
+            vms.forEach { $0.deferReload = false }
+            fsEventsMonitor.resumeAfterOperation()
+        }
 
         // Run the group inside a stored Task so stopCurrentOperation() can cancel it;
         // cancellation propagates to the child tasks and terminates their git processes.
@@ -482,6 +489,15 @@ class RepoManagerViewModel {
         debugLog("[BATCH] Finished \(label): \(operationResults.count - failures) succeeded, \(failures) failed\(isStopping ? " (stopped early)" : "")")
         // Per-repo failures already surface as banners (via each VM's perform()); no results sheet.
         isStopping = false
+
+        // Now that every operation is done and no writes are in flight, reload the operated
+        // repos' status once. This is the only place `git status` runs for the batch, so it
+        // never contends with an in-progress checkout/stash/pull on another repo.
+        await withTaskGroup(of: Void.self) { group in
+            for vm in vms {
+                group.addTask { await vm.reload() }
+            }
+        }
     }
 
     // Stop the current batch operation (lets running tasks finish, skips queued ones)

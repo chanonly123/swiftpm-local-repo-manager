@@ -18,6 +18,11 @@ final class RepoViewModel: Identifiable {
     var isSelected: Bool = false
     // True while a git operation on this repo is in flight (replaces operatingRepoIDs).
     var isOperating: Bool = false
+    // When true, perform() skips its post-operation reload. Set by the batch coordinator so a
+    // multi-repo operation never runs `git status` on one repo while others are still being
+    // written — that concurrency was hanging batches. The coordinator reloads the operated
+    // repos once, after the whole batch finishes.
+    var deferReload: Bool = false
     // Set after a history-rewriting op (rebase/squash/reset) so the diff window offers Force
     // Push as the primary action; cleared once a push/force-push lands. Session-only — not
     // persisted, resets to false on relaunch.
@@ -108,8 +113,10 @@ final class RepoViewModel: Identifiable {
         }
         // If the user cancelled (Stop), skip the reload — its git commands would be
         // terminated too and flip the repo to an error state. Keep the prior status; a
-        // later refresh/FSEvents update will reconcile it.
-        if !Task.isCancelled {
+        // later refresh/FSEvents update will reconcile it. In a batch, `deferReload` also
+        // suppresses it so `git status` never runs while other repos are still being written;
+        // the coordinator reloads all operated repos once the batch completes.
+        if !Task.isCancelled && !deferReload {
             await reload()
         }
         isOperating = false
