@@ -2,8 +2,8 @@ import SwiftUI
 
 struct RepoRowView: View {
     // The single source of truth for this repo — shared with its sheets and diff window.
-    // @Bindable so the row re-renders when the VM's observable state changes (a plain `let`
-    // does not reliably drive updates for a leaf view inside the LazyVStack here).
+    // @Bindable so the sheets below can bind to the VM; reading its @Observable state in the
+    // body (via `repo`, `vm.isSelected`, `vm.isOperating`) drives the row's updates.
     @Bindable var vm: RepoViewModel
     let xcodeProjects: [XcodeProject]
     // Xcode tasks stay coordinator concerns (they touch the project files + repo list).
@@ -18,13 +18,7 @@ struct RepoRowView: View {
     private var repo: GitRepo { vm.repo }
 
     var body: some View {
-        // Establish the observation dependency that actually drives this leaf view's updates.
-        // Reading vm.repo (below, via `repo`) does not reliably register the row as an observer
-        // here, so the row would stay stuck on stale data (e.g. the initial .loading placeholder)
-        // until a forced rebuild. changeToken bumps on every refresh/op, so observing it makes
-        // the row re-render whenever the repo's data changes.
-        let _ = vm.changeToken
-        return HStack(spacing: 10) {
+        HStack(spacing: 10) {
             // Selection checkbox
             Button(action: { vm.isSelected.toggle() }) {
                 Image(systemName: vm.isSelected ? "checkmark.square.fill" : "square")

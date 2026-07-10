@@ -6,9 +6,10 @@ import SwiftUI
 // branch/merge/rebase/delete sheets, and its diff window), so any change — a git op from the
 // row, a commit from the diff window, or a background FSEvents refresh — is observed
 // everywhere it's shown. No view keeps its own copy of the repo's data.
-// Stored properties stay non-isolated (like RepoManagerViewModel) so the coordinator's
-// computed selectors can read them synchronously; the methods that mutate them are @MainActor
-// so all mutation lands on the main thread.
+// The whole type is @MainActor so all observable state is read and mutated on the main actor —
+// this is what SwiftUI observation expects, so reassigning `repo` (a value type) reliably
+// invalidates every view that read it, with no manual change signal needed for in-list rows.
+@MainActor
 @Observable
 final class RepoViewModel: Identifiable {
     // The repo data model. Reassigned wholesale on refresh; observation tracks the accessors.
@@ -16,22 +17,23 @@ final class RepoViewModel: Identifiable {
     // Selection lives here (replaces the coordinator's selectedRepoIDs set).
     var isSelected: Bool = false
     // True while a git operation on this repo is in flight (replaces operatingRepoIDs).
-    @MainActor var isOperating: Bool = false
+    var isOperating: Bool = false
     // Set after a history-rewriting op (rebase/squash/reset) so the diff window offers Force
     // Push as the primary action; cleared once a push/force-push lands. Session-only — not
     // persisted, resets to false on relaunch.
-    @MainActor var needsForcePush: Bool = false
+    var needsForcePush: Bool = false
     // Operation failures for this repo, shown in the top-right banner stack (row + diff
     // window). Never auto-cleared — the user dismisses each banner explicitly.
-    @MainActor var banners: [BannerItem] = []
+    var banners: [BannerItem] = []
     // Diff-window changed-files selection, kept on the VM so it survives closing/reopening the
     // window (session-only). `knownFilePaths` remembers every path we've seen so a reopen
     // restores the saved checkbox state instead of re-checking everything.
-    @MainActor var checkedPaths: Set<String> = []
-    @MainActor var knownFilePaths: Set<String> = []
-    // Bumps on every refresh / operation. Detached observers (the diff window) watch this to
-    // know the repo changed — GitRepo's Equatable only compares url, so `.onChange(of: repo)`
-    // wouldn't fire on a status/branch change.
+    var checkedPaths: Set<String> = []
+    var knownFilePaths: Set<String> = []
+    // Bumps on every refresh / operation. The detached diff window watches this via
+    // `.onChange` to reload its content — GitRepo's Equatable only compares url, so
+    // `.onChange(of: repo)` wouldn't fire on a status/branch change. In-list rows don't need
+    // it; they observe `repo` directly now that the type is uniformly @MainActor.
     private(set) var changeToken: Int = 0
 
     // Stable across the object's life (derived from the repo path, which never changes here).
@@ -49,13 +51,11 @@ final class RepoViewModel: Identifiable {
 
     // Silent background refresh: never flips to .loading, just swaps in fresh data when it
     // arrives. Skipped while an operation is running (that op reloads at the end).
-    @MainActor
     func refresh() async {
         guard !isOperating else { return }
         await reload()
     }
 
-    @MainActor
     func reload() async {
         let old = repo.status.displayText
         repo = await gitService.getRepoInfo(at: repo.url)
@@ -65,11 +65,11 @@ final class RepoViewModel: Identifiable {
 
     // MARK: - Banners
 
-    @MainActor func addBanner(_ message: String) {
+    func addBanner(_ message: String) {
         banners.append(BannerItem(message: message, repoName: repo.name))
     }
 
-    @MainActor func dismissBanner(_ id: UUID) {
+    func dismissBanner(_ id: UUID) {
         banners.removeAll { $0.id == id }
     }
 
@@ -77,7 +77,6 @@ final class RepoViewModel: Identifiable {
 
     // Runs a git command, records success/failure as an OperationResult (for batch
     // aggregation), reloads the repo, and surfaces any failure as a dismissable banner.
-    @MainActor
     private func perform(
         _ operation: OperationResult.GitOperation,
         _ action: (GitRepo) async throws -> String
@@ -117,62 +116,62 @@ final class RepoViewModel: Identifiable {
         return result
     }
 
-    @MainActor @discardableResult func pull() async -> OperationResult {
+    @discardableResult func pull() async -> OperationResult {
         await perform(.pull) { try await self.gitService.pull(at: $0.url) }
     }
 
-    @MainActor @discardableResult func fetch() async -> OperationResult {
+    @discardableResult func fetch() async -> OperationResult {
         await perform(.fetch) { try await self.gitService.fetch(at: $0.url) }
     }
 
-    @MainActor @discardableResult func push() async -> OperationResult {
+    @discardableResult func push() async -> OperationResult {
         let result = await perform(.push) { try await self.gitService.push(at: $0.url) }
         if result.success { needsForcePush = false }
         return result
     }
 
-    @MainActor @discardableResult func forcePush() async -> OperationResult {
+    @discardableResult func forcePush() async -> OperationResult {
         let result = await perform(.forcePush) { try await self.gitService.forcePush(at: $0.url) }
         if result.success { needsForcePush = false }
         return result
     }
 
-    @MainActor @discardableResult func hardReset() async -> OperationResult {
+    @discardableResult func hardReset() async -> OperationResult {
         await perform(.hardReset) { try await self.gitService.hardReset(at: $0.url) }
     }
 
-    @MainActor @discardableResult func clean() async -> OperationResult {
+    @discardableResult func clean() async -> OperationResult {
         await perform(.clean) { try await self.gitService.clean(at: $0.url) }
     }
 
-    @MainActor @discardableResult func recheckout(toBranch: String? = nil) async -> OperationResult {
+    @discardableResult func recheckout(toBranch: String? = nil) async -> OperationResult {
         await perform(.recheckout) { try await self.gitService.recheckout(at: $0.url, toBranch: toBranch) }
     }
 
-    @MainActor @discardableResult func merge(branch: String) async -> OperationResult {
+    @discardableResult func merge(branch: String) async -> OperationResult {
         await perform(.merge) { try await self.gitService.merge(at: $0.url, branch: branch) }
     }
 
-    @MainActor @discardableResult func rebase(onto branch: String) async -> OperationResult {
+    @discardableResult func rebase(onto branch: String) async -> OperationResult {
         let result = await perform(.rebase) { try await self.gitService.rebase(at: $0.url, onto: branch) }
         if result.success { needsForcePush = true }
         return result
     }
 
-    @MainActor @discardableResult func switchBranch(name: String, stashChanges: Bool) async -> OperationResult {
+    @discardableResult func switchBranch(name: String, stashChanges: Bool) async -> OperationResult {
         await perform(.switchBranch) { try await self.gitService.switchBranch(at: $0.url, name: name, stashChanges: stashChanges) }
     }
 
-    @MainActor @discardableResult func createBranch(name: String, stashChanges: Bool) async -> OperationResult {
+    @discardableResult func createBranch(name: String, stashChanges: Bool) async -> OperationResult {
         await perform(.createBranch) { try await self.gitService.createBranch(at: $0.url, name: name, stashChanges: stashChanges) }
     }
 
-    @MainActor @discardableResult func deleteBranch(name: String, deleteRemote: Bool) async -> OperationResult {
+    @discardableResult func deleteBranch(name: String, deleteRemote: Bool) async -> OperationResult {
         await perform(.deleteBranch) { try await self.gitService.deleteBranch(at: $0.url, name: name, deleteRemote: deleteRemote) }
     }
 
     // Continue / abort the in-progress operation recorded on the repo (nil if none).
-    @MainActor @discardableResult func continueInProgress() async -> OperationResult? {
+    @discardableResult func continueInProgress() async -> OperationResult? {
         guard let operation = repo.inProgressOperation else { return nil }
         let result = await perform(.continueOperation) { try await self.gitService.continueInProgress(at: $0.url, operation: operation) }
         // A rebase that paused on a conflict rewrites history once continued to completion.
@@ -180,7 +179,7 @@ final class RepoViewModel: Identifiable {
         return result
     }
 
-    @MainActor @discardableResult func abortInProgress() async -> OperationResult? {
+    @discardableResult func abortInProgress() async -> OperationResult? {
         guard let operation = repo.inProgressOperation else { return nil }
         return await perform(.abortOperation) { try await self.gitService.abortInProgress(at: $0.url, operation: operation) }
     }

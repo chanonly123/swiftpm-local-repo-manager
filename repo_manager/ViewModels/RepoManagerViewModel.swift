@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 
+@MainActor
 @Observable
 class RepoManagerViewModel {
     // One RepoViewModel per discovered repo — each is the single source of truth for its repo
@@ -32,7 +33,13 @@ class RepoManagerViewModel {
     private let gitService = GitService()
     private let repoService = RepoService()
     private let fsEventsMonitor = FSEventsMonitor()
-    private var appObservers: [NSObjectProtocol] = []
+    // Written once in init, read once in the nonisolated deinit — never observed, so it stays
+    // outside the main-actor isolation the rest of the state lives under.
+    private nonisolated(unsafe) var appObservers: [NSObjectProtocol] = []
+    // Mirrors the currently security-scoped directory so the nonisolated deinit can release it
+    // without reaching into the main-actor-isolated `currentDirectory`. Kept in sync wherever we
+    // start/stop accessing a scoped resource.
+    private nonisolated(unsafe) var scopedResourceURL: URL?
     // Session cache: reuse the same RepoViewModel for a path across re-scans/refreshes so
     // cached data shows immediately (no loading flash) and refresh happens silently behind it.
     private var repoCache: [URL: RepoViewModel] = [:]
@@ -64,33 +71,33 @@ class RepoManagerViewModel {
     }
 
     // Tab-wide banner stack: tab-level notices plus every repo's own banners (newest last).
-    @MainActor var banners: [BannerItem] {
+    var banners: [BannerItem] {
         tabBanners + repoViewModels.flatMap(\.banners)
     }
 
-    @MainActor func addBanner(_ message: String) {
+    func addBanner(_ message: String) {
         tabBanners.append(BannerItem(message: message))
     }
 
-    @MainActor func dismissBanner(_ id: UUID) {
+    func dismissBanner(_ id: UUID) {
         tabBanners.removeAll { $0.id == id }
         repoViewModels.forEach { $0.dismissBanner(id) }
     }
 
-    @MainActor func dismissAllBanners() {
+    func dismissAllBanners() {
         tabBanners.removeAll()
         repoViewModels.forEach { $0.banners.removeAll() }
     }
 
     // MARK: - Active tab (FSEvents runs for the shown tab only)
 
-    @MainActor func activate() {
+    func activate() {
         isActiveTab = true
         fsEventsMonitor.resume()
         Task { @MainActor in await refreshAllRepositoryStatuses() }
     }
 
-    @MainActor func deactivate() {
+    func deactivate() {
         isActiveTab = false
         fsEventsMonitor.pause()
     }
@@ -126,10 +133,9 @@ class RepoManagerViewModel {
     deinit {
         appObservers.forEach { NotificationCenter.default.removeObserver($0) }
         fsEventsMonitor.stopMonitoring()
-        currentDirectory?.stopAccessingSecurityScopedResource()
+        scopedResourceURL?.stopAccessingSecurityScopedResource()
     }
 
-    @MainActor
     func refreshAllRepositoryStatuses() async {
         guard !repoViewModels.isEmpty, !isScanning, !isPerformingOperation else { return }
         debugLog("[DEBUG] Refreshing all repository statuses")
@@ -143,7 +149,6 @@ class RepoManagerViewModel {
     }
 
     // Load directory from security-scoped bookmark
-    @MainActor
     func loadDirectory(from bookmarkData: Data) async {
         do {
             var isStale = false
@@ -159,6 +164,7 @@ class RepoManagerViewModel {
             // Start accessing the security-scoped resource
             if url.startAccessingSecurityScopedResource() {
                 currentDirectory = url
+                scopedResourceURL = url
                 debugLog("[DEBUG] Loaded directory from bookmark: \(url.path)")
                 await scanRepositories()
             } else {
@@ -187,11 +193,13 @@ class RepoManagerViewModel {
     // Set directory with security-scoped access
     private func setDirectory(_ url: URL) {
         // Stop accessing previous directory if any
-        currentDirectory?.stopAccessingSecurityScopedResource()
+        scopedResourceURL?.stopAccessingSecurityScopedResource()
+        scopedResourceURL = nil
 
         // Start accessing new directory
         if url.startAccessingSecurityScopedResource() {
             currentDirectory = url
+            scopedResourceURL = url
             debugLog("[DEBUG] Set directory: \(url.path)")
         } else {
             debugLog("[ERROR] Failed to access security-scoped resource for: \(url.path)")
@@ -200,7 +208,6 @@ class RepoManagerViewModel {
     }
 
     // Select directory and scan for repositories
-    @MainActor
     func selectDirectory(validate: ((URL) -> Bool)? = nil, onSelected: ((URL) -> Void)? = nil) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -227,14 +234,12 @@ class RepoManagerViewModel {
     }
 
     // Set directory programmatically and scan
-    @MainActor
     func setDirectoryAndScan(_ url: URL) async {
         setDirectory(url)
         await scanRepositories()
     }
 
     // Scan for repositories in the current directory
-    @MainActor
     func scanRepositories() async {
         guard let directory = currentDirectory else { return }
 
@@ -307,7 +312,6 @@ class RepoManagerViewModel {
     }
 
     // Start monitoring repositories for file system changes
-    @MainActor
     private func startMonitoringRepositories() {
         let repoURLs = repositories.map { $0.url }
         fsEventsMonitor.startMonitoringMultiple(repoURLs: repoURLs) { [weak self] repoURL in
@@ -321,7 +325,6 @@ class RepoManagerViewModel {
     }
 
     // Handle file system change for a specific repository
-    @MainActor
     private func handleFileSystemChange(at repoURL: URL) async {
         guard let vm = repoCache[repoURL] else { return }
         // refresh() no-ops while the repo has an operation in flight, which also prevents
@@ -360,26 +363,22 @@ class RepoManagerViewModel {
     }
 
     // Pull selected repositories
-    @MainActor
     func pullSelected() async {
         await performBatch("pull", on: selectedRepositoryVMs) { await $0.pull() }
     }
 
     // Fetch selected repositories
-    @MainActor
     func fetchSelected() async {
         await performBatch("fetch", on: selectedRepositoryVMs) { await $0.fetch() }
     }
 
     // Recheckout selected repositories to current branch
-    @MainActor
     func recheckoutCurrentBranch() async {
         await performBatch("recheckout", on: selectedRepositoryVMs) { await $0.recheckout() }
     }
 
     // Load the union of local + remote branches across the selected repos so the
     // recheckout popup can offer them as pickable suggestions.
-    @MainActor
     func loadRecheckoutBranches() async {
         recheckoutBranches = []
         var seen = Set<String>()
@@ -394,31 +393,26 @@ class RepoManagerViewModel {
     }
 
     // Recheckout selected repositories to custom branch
-    @MainActor
     func recheckoutToCustomBranch(_ branchName: String) async {
         await performBatch("recheckout \(branchName)", on: selectedRepositoryVMs) { await $0.recheckout(toBranch: branchName) }
     }
 
     // Push selected repositories
-    @MainActor
     func pushSelected() async {
         await performBatch("push", on: selectedRepositoryVMs) { await $0.push() }
     }
 
     // Force-push selected repositories
-    @MainActor
     func forcePushSelected() async {
         await performBatch("force-push", on: selectedRepositoryVMs) { await $0.forcePush() }
     }
 
     // Hard reset selected repositories
-    @MainActor
     func hardResetSelected() async {
         await performBatch("hard-reset", on: selectedRepositoryVMs) { await $0.hardReset() }
     }
 
     // Clean (git clean -xdf) selected repositories
-    @MainActor
     func cleanSelected() async {
         await performBatch("clean", on: selectedRepositoryVMs) { await $0.clean() }
     }
@@ -427,7 +421,6 @@ class RepoManagerViewModel {
     // Each VM runs its own operation (setting its isOperating flag and reloading itself);
     // this layer only aggregates the per-repo OperationResults for OperationResultsView and
     // drains queued work when the user hits Stop.
-    @MainActor
     private func performBatch(
         _ label: String = "operation",
         on vms: [RepoViewModel],
@@ -496,7 +489,6 @@ class RepoManagerViewModel {
     // MARK: - xcode-specific operations
 
     // Add local dependencies to xcode project
-    @MainActor
     func addLocalDependencies(to project: XcodeProject) async {
         guard let directory = currentDirectory else {
             addBanner("No directory selected")
@@ -525,7 +517,6 @@ class RepoManagerViewModel {
     }
 
     // Remove local dependencies from xcode project
-    @MainActor
     func removeLocalDependencies(from project: XcodeProject) async {
         isPerformingOperation = true
         debugLog("[DEBUG] Removing local dependencies from \(project.name)")
@@ -540,7 +531,6 @@ class RepoManagerViewModel {
     }
 
     // Toggle run scripts in a project
-    @MainActor
     func toggleRunScripts(for project: XcodeProject) async {
         isPerformingOperation = true
         debugLog("[DEBUG] Toggling run scripts in \(project.name)")
