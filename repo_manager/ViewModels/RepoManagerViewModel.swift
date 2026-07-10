@@ -241,7 +241,7 @@ class RepoManagerViewModel {
 
     // Scan for repositories in the current directory
     func scanRepositories() async {
-        guard let directory = currentDirectory else { return }
+        guard let directory = currentDirectory, !isScanning else { return }
 
         debugLog("[DEBUG] Scanning directory: \(directory.path)")
 
@@ -250,7 +250,10 @@ class RepoManagerViewModel {
 
         // Only show the full-screen scanning state on a cold scan (nothing displayed yet).
         // A re-scan keeps the existing rows visible and updates them in place.
-        isScanning = repoViewModels.isEmpty
+        isScanning = true //repoViewModels.isEmpty
+        defer {
+            isScanning = false
+        }
 
         do {
             // Scan for git repositories
@@ -280,7 +283,6 @@ class RepoManagerViewModel {
                 return vm
             }
             self.repoViewModels = vms.sorted { $0.repo.name < $1.repo.name }
-            isScanning = false
 
             // Start monitoring all repositories for file system changes
             startMonitoringRepositories()
@@ -311,7 +313,6 @@ class RepoManagerViewModel {
         } catch {
             debugLog("[ERROR] Failed to scan directory: \(error.localizedDescription)")
             addBanner("Failed to scan directory: \(error.localizedDescription)")
-            isScanning = false
         }
     }
 
