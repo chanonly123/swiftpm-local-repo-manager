@@ -381,19 +381,14 @@ class RepoManagerViewModel {
         await performBatch("recheckout", on: selectedRepositoryVMs) { await $0.recheckout() }
     }
 
-    // Load the union of local + remote branches across the selected repos so the
-    // recheckout popup can offer them as pickable suggestions.
+    // Load the local + remote branches of the first selected repo so the recheckout popup can
+    // offer them as pickable suggestions. Only the first repo is used (not the union across all
+    // selected repos) to keep the list fast and representative.
     func loadRecheckoutBranches() async {
         recheckoutBranches = []
-        var seen = Set<String>()
-        var all: [String] = []
-        for repo in selectedRepositories {
-            let branches = (try? await gitService.getBranches(at: repo.url)) ?? []
-            for branch in branches where seen.insert(branch).inserted {
-                all.append(branch)
-            }
-        }
-        recheckoutBranches = all.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        guard let firstRepo = selectedRepositories.first else { return }
+        let branches = (try? await gitService.getBranches(at: firstRepo.url)) ?? []
+        recheckoutBranches = branches.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     // Recheckout selected repositories to custom branch
