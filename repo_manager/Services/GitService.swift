@@ -408,11 +408,10 @@ actor GitService {
     }
 
     // Fetch from remote. Fetch is the one command that can block on the network — waiting
-    // on a credential/host-key prompt or a stalled transfer — so it gets defenses the other
-    // commands don't need:
+    // on a credential/host-key prompt or a stalled transfer — so it gets git-level defenses the
+    // other commands don't need:
     //   • GIT_TERMINAL_PROMPT=0 + SSH BatchMode: fail fast instead of blocking on a prompt.
-    //   • ConnectTimeout / http low-speed limits: abort a dead or crawling connection.
-    //   • an explicit 30s hard timeout in runGitCommand as the final backstop.
+    //   • ConnectTimeout / http low-speed limits: git itself aborts a dead or crawling connection.
     // It's also cancellable mid-flight via the Stop button (task cancellation → terminate).
     nonisolated func fetch(at repoURL: URL) async throws -> String {
         let out = try? await runGitCommand(
@@ -424,8 +423,7 @@ actor GitService {
             environment: [
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
-            ],
-            timeout: .seconds(30)
+            ]
         )
         return out ?? ""
     }
@@ -576,7 +574,7 @@ actor GitService {
     }
 
     // Run a git command
-    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil, timeout: Duration = .seconds(30), noOptionalLocks: Bool = false) async throws -> String {
+    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil, noOptionalLocks: Bool = false) async throws -> String {
         let repoName = repoURL.lastPathComponent
         // --no-optional-locks stops read-only commands (status/diff) from taking index.lock
         // for their opportunistic index refresh, so they can never contend with a concurrent
@@ -599,19 +597,10 @@ actor GitService {
         process.standardError = errorPipe
 
         // Terminate the process if the enclosing task is cancelled (the user hit Stop) so a
-        // blocked read unwinds immediately instead of waiting out the full timeout.
+        // blocked read unwinds immediately. Otherwise we wait for git to finish on its own.
         return try await withTaskCancellationHandler {
             do {
                 try process.run()
-
-                // Terminate the process after `timeout` so a genuinely hung git unblocks the
-                // reads below. Runs as a lightweight timer task; because the draining no longer
-                // occupies cooperative-pool workers (see readPipeToEnd), this can always fire.
-                let timeoutTask = Task {
-                    try? await Task.sleep(for: timeout)
-                    if process.isRunning { process.terminate() }
-                }
-                defer { timeoutTask.cancel() }
 
                 // Drain stdout and stderr *concurrently* and *off the Swift cooperative pool*:
                 //  1. Reading stdout fully and only then stderr deadlocks when git fills the
@@ -619,23 +608,19 @@ actor GitService {
                 //     writing stderr and never closes stdout. Reading both at once avoids it.
                 //  2. FileHandle.readToEnd() blocks its thread until EOF. On the cooperative
                 //     pool, a batch of concurrent git commands parks every worker in a blocked
-                //     read — starving even the timeout task meant to rescue them, so nothing ever
-                //     unblocks. readPipeToEnd runs the blocking read on Dispatch's global pool
-                //     (which grows on demand) instead.
+                //     read, deadlocking Swift concurrency. readPipeToEnd runs the blocking read
+                //     on Dispatch's global pool (which grows on demand) instead.
                 async let outFuture = self.readPipeToEnd(outputPipe.fileHandleForReading)
                 async let errFuture = self.readPipeToEnd(errorPipe.fileHandleForReading)
                 let outputData = await outFuture
                 let errorData = await errFuture
 
                 process.waitUntilExit()
-                timeoutTask.cancel()
 
-                // A process we terminated ourselves (timeout or Stop) exits via an uncaught
-                // signal — surface that rather than a misleading non-zero exit.
-                if process.terminationReason == .uncaughtSignal {
-                    let reason = Task.isCancelled ? "cancelled" : "timed out after \(timeout)"
-                    debugLog("[ERROR] \(repoName) \(reason): \(command)")
-                    throw GitServiceError.commandFailed("Git command \(reason)")
+                // The user hit Stop: the cancellation handler terminated the process.
+                if Task.isCancelled {
+                    debugLog("[ERROR] \(repoName) cancelled: \(command)")
+                    throw GitServiceError.commandFailed("Git command cancelled")
                 }
 
                 let output = String(data: outputData, encoding: .utf8) ?? ""
@@ -661,9 +646,9 @@ actor GitService {
 
     /// Read a file handle to EOF on Dispatch's global pool rather than the Swift cooperative
     /// thread pool. `readToEnd()` blocks its thread until EOF, and blocking a cooperative worker
-    /// is unsafe: a batch of concurrent git commands would park every worker — and the timeout
-    /// task meant to rescue a hung read — in a blocked call, deadlocking the whole batch. The
-    /// global pool grows on demand, so it can't be starved this way.
+    /// is unsafe: a batch of concurrent git commands would park every worker in a blocked call,
+    /// deadlocking Swift concurrency. The global pool grows on demand, so it can't be starved
+    /// this way.
     private nonisolated func readPipeToEnd(_ handle: FileHandle) async -> Data {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
