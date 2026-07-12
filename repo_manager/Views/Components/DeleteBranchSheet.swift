@@ -6,7 +6,7 @@ import SwiftUI
 // list, but never offers the current branch (git won't delete a checked-out branch)
 // and adds an optional toggle to also delete the branch on origin.
 struct DeleteBranchSheet: View {
-    @Bindable var vm: RepoViewModel
+    @ObservedObject var vm: RepoViewModel
 
     private var repo: GitRepo { vm.repo }
 
@@ -15,7 +15,8 @@ struct DeleteBranchSheet: View {
     @State private var branches: [String] = []
     @State private var deleteRemote = false
 
-    private let git = GitService()
+    // Share the repo's git actor so branch listing serializes with its operations.
+    private var git: GitService { vm.gitService }
     private let suggestionLimit = 50
 
     private var trimmedQuery: String {

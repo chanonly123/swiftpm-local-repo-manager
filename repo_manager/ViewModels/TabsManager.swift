@@ -1,12 +1,12 @@
 import Foundation
 import SwiftUI
+import Combine
 
 @MainActor
-@Observable
-class TabsManager {
-    var tabs: [WorkspaceTab] = []
-    var selectedTabID: UUID?
-    var viewModels: [UUID: RepoManagerViewModel] = [:]
+class TabsManager: ObservableObject {
+    @Published var tabs: [WorkspaceTab] = []
+    @Published var selectedTabID: UUID?
+    @Published var viewModels: [UUID: RepoManagerViewModel] = [:]
 
     private let userDefaults = UserDefaults.standard
     private let tabsKey = "workspaceTabs"
@@ -37,6 +37,8 @@ class TabsManager {
 
     // Selecting a tab makes it the only one monitoring the filesystem (FSEvents).
     func selectTab(_ id: UUID) {
+        // TEMP DIAGNOSTIC: capture who is triggering tab selection (sync stack = real caller).
+        debugLog("[TRACE] selectTab(\(id)) from:\n" + Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: "\n"))
         for (tabID, vm) in viewModels where tabID != id { vm.deactivate() }
         selectedTabID = id
         viewModels[id]?.activate()
@@ -92,9 +94,9 @@ class TabsManager {
 
     // MARK: - Version Check
 
-    var newVersion: String?
-    var newVersionDesc: String?
-    var newVersionAlert: Bool = false
+    @Published var newVersion: String?
+    @Published var newVersionDesc: String?
+    @Published var newVersionAlert: Bool = false
 
     /// True once a newer published version has been detected. Unlike
     /// `newVersionAlert`, this stays set after the alert is dismissed so the

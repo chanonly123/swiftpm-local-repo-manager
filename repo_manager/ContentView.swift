@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var tabsManager = TabsManager()
+    @StateObject private var tabsManager = TabsManager()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -96,7 +96,7 @@ struct ContentView: View {
 
 // Separate view for tab content to isolate ViewModel observations
 struct TabContentView: View {
-    @Bindable var viewModel: RepoManagerViewModel
+    @ObservedObject var viewModel: RepoManagerViewModel
     var updateAvailable: Bool = false
     let onDirectorySelected: (URL) -> Void
     var validateDirectory: ((URL) -> Bool)? = nil

@@ -2,9 +2,9 @@ import SwiftUI
 
 struct RepoRowView: View {
     // The single source of truth for this repo — shared with its sheets and diff window.
-    // @Bindable so the sheets below can bind to the VM; reading its @Observable state in the
+    // @ObservedObject so the sheets below can bind to the VM; reading its @Published state in the
     // body (via `repo`, `vm.isSelected`, `vm.isOperating`) drives the row's updates.
-    @Bindable var vm: RepoViewModel
+    @ObservedObject var vm: RepoViewModel
     let xcodeProjects: [XcodeProject]
     // Xcode tasks stay coordinator concerns (they touch the project files + repo list).
     var onAddDependencies: (XcodeProject) -> Void = { _ in }

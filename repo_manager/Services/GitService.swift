@@ -4,6 +4,7 @@ enum GitServiceError: LocalizedError {
     case gitNotFound
     case notAGitRepository
     case commandFailed(String)
+    case timedOut(String)
     case invalidOutput
 
     var errorDescription: String? {
@@ -14,6 +15,8 @@ enum GitServiceError: LocalizedError {
             return "Directory is not a git repository."
         case .commandFailed(let message):
             return "Git command failed: \(message)"
+        case .timedOut(let command):
+            return "Git command timed out: \(command)"
         case .invalidOutput:
             return "Invalid git command output."
         }
@@ -21,7 +24,18 @@ enum GitServiceError: LocalizedError {
 }
 
 actor GitService {
+    // Timeout budget for network/bulk commands (fetch, pull, push, clean, hard reset, …), which
+    // legitimately run longer than the 5s default for fast local commands.
+    static let networkTimeout: TimeInterval = 30
+
     private let gitPath: String
+    // Per-instance serial gate. Each RepoViewModel owns one GitService, and every command on
+    // this instance goes through `runGitCommand`, which acquires this gate — so only one git
+    // process runs at a time for a given repo. An `actor` alone can't guarantee this: actors
+    // are reentrant, so any `await` inside an isolated method lets the next call interleave.
+    // The gate holds across the whole command (spawn → drain → exit), giving true serial
+    // execution. Different repos use different instances and still run fully in parallel.
+    private let gate = SerialGate()
 
     init() {
         // Try multiple git paths - /usr/bin/git uses xcrun which fails in sandbox
@@ -31,7 +45,6 @@ actor GitService {
         ]
 
         self.gitPath = possiblePaths.first { FileManager.default.fileExists(atPath: $0) } ?? "/usr/bin/git"
-        debugLog("[DEBUG] Using git at: \(self.gitPath)")
     }
 
     // Check if directory is a valid git repository
@@ -197,14 +210,18 @@ actor GitService {
     // Merge a branch into the current branch. Conflicts exit non-zero and surface as an error;
     // the repo is then left in a merging state (see getInProgressOperation).
     nonisolated func merge(at repoURL: URL, branch: String) async throws -> String {
-        let output = try await runGitCommand(args: ["merge", "--no-edit", branch], at: repoURL)
+        // Mutating and potentially long: give it the network budget and never auto-retry (a
+        // retry could re-run a merge that already left the repo mid-merge).
+        let output = try await runGitCommand(args: ["merge", "--no-edit", branch], at: repoURL, timeout: GitService.networkTimeout, retries: 0)
         return output.isEmpty ? "✓ Merged \(branch) into current branch" : output
     }
 
     // Rebase the current branch onto the given branch. Conflicts exit non-zero and leave the
     // repo mid-rebase.
     nonisolated func rebase(at repoURL: URL, onto branch: String) async throws -> String {
-        let output = try await runGitCommand(args: ["rebase", branch], at: repoURL)
+        // Mutating and potentially long: network budget, no auto-retry (avoid re-running a rebase
+        // that already left the repo mid-rebase).
+        let output = try await runGitCommand(args: ["rebase", branch], at: repoURL, timeout: GitService.networkTimeout, retries: 0)
         return output.isEmpty ? "✓ Rebased current branch onto \(branch)" : output
     }
 
@@ -220,7 +237,9 @@ actor GitService {
         _ = try await runGitCommand(
             args: [operation.gitCommand, "--continue"],
             at: repoURL,
-            environment: ["GIT_EDITOR": "true"]
+            environment: ["GIT_EDITOR": "true"],
+            timeout: GitService.networkTimeout,
+            retries: 0 // --continue commits; a retry could re-apply a step that already landed
         )
         return "✓ Continued \(operation.rawValue.lowercased())"
     }
@@ -254,7 +273,7 @@ actor GitService {
             messages.append("• No local branch \(name) to delete")
         }
         if deleteRemote {
-            _ = try await runGitCommand(args: ["push", "origin", "--delete", name], at: repoURL)
+            _ = try await runGitCommand(args: ["push", "origin", "--delete", name], at: repoURL, timeout: GitService.networkTimeout)
             messages.append("✓ Deleted remote branch origin/\(name)")
         }
         return messages.joined(separator: "\n")
@@ -274,7 +293,7 @@ actor GitService {
     // Apply a patch/diff file to the working tree. --3way falls back to a 3-way merge when a
     // hunk doesn't apply cleanly (leaving conflict markers to resolve) instead of aborting.
     nonisolated func applyPatch(at repoURL: URL, patchPath: String) async throws -> String {
-        try await runGitCommand(args: ["apply", "--3way", patchPath], at: repoURL)
+        try await runGitCommand(args: ["apply", "--3way", patchPath], at: repoURL, timeout: GitService.networkTimeout)
     }
 
     // List stash entries — newest first
@@ -313,7 +332,9 @@ actor GitService {
     // combined staged changes.
     nonisolated func squashCommits(at repoURL: URL, count: Int, message: String) async throws -> String {
         _ = try await runGitCommand(args: ["reset", "--soft", "HEAD~\(count)"], at: repoURL)
-        _ = try await runGitCommand(args: ["commit", "-m", message], at: repoURL)
+        // Don't auto-retry the commit: if it timed out after already committing, a rerun would
+        // spuriously fail with "nothing to commit".
+        _ = try await runGitCommand(args: ["commit", "-m", message], at: repoURL, retries: 0)
         return "✓ Squashed \(count) commits"
     }
 
@@ -343,9 +364,10 @@ actor GitService {
         _ = try await runGitCommand(args: ["add", "--"] + paths, at: repoURL)
     }
 
-    // Commit currently staged changes
+    // Commit currently staged changes. No auto-retry: a retry after a commit that timed out
+    // post-success would spuriously fail with "nothing to commit".
     nonisolated func commitStaged(at repoURL: URL, message: String) async throws -> String {
-        try await runGitCommand(args: ["commit", "-m", message], at: repoURL)
+        try await runGitCommand(args: ["commit", "-m", message], at: repoURL, retries: 0)
     }
 
     // The effective commit identity for this repo (repo-local override, else global config).
@@ -390,12 +412,12 @@ actor GitService {
 
     // Push current branch to origin
     nonisolated func push(at repoURL: URL) async throws -> String {
-        try await runGitCommand(args: ["push", "origin", "HEAD"], at: repoURL)
+        try await runGitCommand(args: ["push", "origin", "HEAD"], at: repoURL, timeout: GitService.networkTimeout)
     }
 
     // Force-push current branch to origin
     nonisolated func forcePush(at repoURL: URL) async throws -> String {
-        try await runGitCommand(args: ["push", "--force-with-lease", "origin", "HEAD"], at: repoURL)
+        try await runGitCommand(args: ["push", "--force-with-lease", "origin", "HEAD"], at: repoURL, timeout: GitService.networkTimeout)
     }
 
     // Get remote URL
@@ -403,7 +425,8 @@ actor GitService {
     nonisolated func pull(at repoURL: URL) async throws -> String {
         try await runGitCommand(
             args: ["pull"],
-            at: repoURL
+            at: repoURL,
+            timeout: GitService.networkTimeout
         )
     }
 
@@ -423,7 +446,8 @@ actor GitService {
             environment: [
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
-            ]
+            ],
+            timeout: GitService.networkTimeout
         )
         return out ?? ""
     }
@@ -465,10 +489,10 @@ actor GitService {
         do {
             // Fetch from origin
             messages.append("Fetching from origin...")
-            _ = try await runGitCommand(args: ["fetch"], at: repoURL)
+            _ = try await runGitCommand(args: ["fetch"], at: repoURL, timeout: GitService.networkTimeout)
         } catch {
             messages.append("Fetching from origin...")
-            _ = try? await runGitCommand(args: ["remote", "prune", "origin"], at: repoURL)
+            _ = try? await runGitCommand(args: ["remote", "prune", "origin"], at: repoURL, timeout: GitService.networkTimeout)
         }
 
         do {
@@ -522,9 +546,9 @@ actor GitService {
 
         // Perform hard reset
         messages.append("Resetting to HEAD...")
-        _ = try await runGitCommand(args: ["reset", "--hard", "HEAD"], at: repoURL)
+        _ = try await runGitCommand(args: ["reset", "--hard", "HEAD"], at: repoURL, timeout: GitService.networkTimeout)
 
-        _ = try await runGitCommand(args: ["clean", "-f", "-d"], at: repoURL)
+        _ = try await runGitCommand(args: ["clean", "-f", "-d"], at: repoURL, timeout: GitService.networkTimeout)
 
         messages.append("✓ Successfully reset to HEAD")
         return messages.joined(separator: "\n")
@@ -534,7 +558,7 @@ actor GitService {
     // baked into hardReset (-f -d), the -x flag also deletes ignored files — build artifacts,
     // caches, DerivedData, etc. Does not touch tracked changes.
     nonisolated func clean(at repoURL: URL) async throws -> String {
-        let output = try await runGitCommand(args: ["clean", "-xdf"], at: repoURL)
+        let output = try await runGitCommand(args: ["clean", "-xdf"], at: repoURL, timeout: GitService.networkTimeout)
         let removed = output
             .components(separatedBy: .newlines)
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -573,16 +597,59 @@ actor GitService {
         return (ahead, behind)
     }
 
-    // Run a git command
-    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil, noOptionalLocks: Bool = false) async throws -> String {
+    // Run a git command, serialized on this service's gate and bounded by a timeout.
+    //
+    // `timeout` caps how long a single attempt may run (default 5s for fast local commands; the
+    // network/bulk callers pass GitService.networkTimeout). A command that exceeds it is killed
+    // and surfaces as GitServiceError.timedOut, so nothing can hang forever.
+    //
+    // `retries` re-runs the command *only* after a timeout (never after a genuine failure or a
+    // user Stop) — a deterministic command that failed on its merits won't magically pass on a
+    // rerun, and re-issuing a mutating command that actually failed could do harm.
+    private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil, noOptionalLocks: Bool = false, timeout: TimeInterval = 5, retries: Int = 2) async throws -> String {
         let repoName = repoURL.lastPathComponent
+
+        // Serialize: wait until any in-flight command on this service finishes before starting.
+        // Released in the defer, whether the command succeeds, fails, or is cancelled (Stop).
+        await gate.acquire()
+        defer { gate.release() }
         // --no-optional-locks stops read-only commands (status/diff) from taking index.lock
         // for their opportunistic index refresh, so they can never contend with a concurrent
         // write on the same repo (e.g. an FSEvents-triggered status during a commit/rebase).
         let fullArgs = noOptionalLocks ? ["--no-optional-locks"] + args : args
         let command = "git \(fullArgs.joined(separator: " "))"
-        debugLog("[GIT] \(repoName) $ \(command)")
 
+        var lastError: Error = GitServiceError.commandFailed("Unknown error")
+        for attempt in 0...max(0, retries) {
+            if attempt > 0 {
+                debugLog("[RETRY] \(repoName) attempt \(attempt + 1) of \(retries + 1): \(command)")
+            }
+            do {
+                return try await runGitProcess(
+                    fullArgs: fullArgs, command: command, repoName: repoName,
+                    at: repoURL, environment: environment,
+                    allowNonZeroExit: allowNonZeroExit, logErrors: logErrors,
+                    timeout: timeout
+                )
+            } catch let error as GitServiceError {
+                lastError = error
+                if case .timedOut = error, attempt < retries, !Task.isCancelled { continue }
+                throw error
+            }
+        }
+        throw lastError
+    }
+
+    // One attempt at running the process. Spawns git, drains its pipes, and enforces `timeout`.
+    //
+    // The whole spawn/drain/wait runs on background dispatch threads and reports its outcome
+    // through a one-shot `RunState`. Crucially, the timeout (and a user Stop) resolve that same
+    // RunState and return to the caller *immediately* — we never await the pipe reads on the
+    // timeout path. That's the fix for the app hang: on Darwin, neither closing the read fd nor
+    // SIGTERM reliably unblocks a `readToEnd()` that a surviving child still holds open, so any
+    // design that awaited the read could hang forever. Here the reader thread may leak for a hung
+    // command, but the app always makes progress. git is force-killed (SIGTERM then SIGKILL).
+    private nonisolated func runGitProcess(fullArgs: [String], command: String, repoName: String, at repoURL: URL, environment: [String: String]?, allowNonZeroExit: Bool, logErrors: Bool, timeout: TimeInterval) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = fullArgs
@@ -596,65 +663,71 @@ actor GitService {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        // Terminate the process if the enclosing task is cancelled (the user hit Stop) so a
-        // blocked read unwinds immediately. Otherwise we wait for git to finish on its own.
+        let state = RunState()
+        nonisolated(unsafe) let proc = process
+        nonisolated(unsafe) let outHandle = outputPipe.fileHandleForReading
+        nonisolated(unsafe) let errHandle = errorPipe.fileHandleForReading
+
         return try await withTaskCancellationHandler {
-            do {
-                try process.run()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+                state.attach(continuation)
 
-                // Drain stdout and stderr *concurrently* and *off the Swift cooperative pool*:
-                //  1. Reading stdout fully and only then stderr deadlocks when git fills the
-                //     stderr pipe buffer (~64KB) while we're still blocked on stdout — git blocks
-                //     writing stderr and never closes stdout. Reading both at once avoids it.
-                //  2. FileHandle.readToEnd() blocks its thread until EOF. On the cooperative
-                //     pool, a batch of concurrent git commands parks every worker in a blocked
-                //     read, deadlocking Swift concurrency. readPipeToEnd runs the blocking read
-                //     on Dispatch's global pool (which grows on demand) instead.
-                async let outFuture = self.readPipeToEnd(outputPipe.fileHandleForReading)
-                async let errFuture = self.readPipeToEnd(errorPipe.fileHandleForReading)
-                let outputData = await outFuture
-                let errorData = await errFuture
+                // Worker: spawn git, drain both pipes concurrently (avoids the >64KB stderr/stdout
+                // deadlock), wait, and report. Runs off the Swift cooperative pool so a batch of
+                // blocked reads can't starve it. If it's abandoned (timeout/Stop already resolved
+                // the RunState), `finish` is a no-op and this thread simply unwinds — or leaks,
+                // if a surviving child holds the pipe, which is bounded and preferable to a hang.
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try proc.run()
+                    } catch {
+                        if logErrors { debugLog("[ERROR] \(repoName) failed to launch: \(command) — \(error.localizedDescription)") }
+                        state.finish(.failure(GitServiceError.commandFailed(error.localizedDescription)))
+                        return
+                    }
 
-                process.waitUntilExit()
+                    // Mutated on the reader threads, read here after group.wait() — the group's
+                    // barrier makes that safe; nonisolated(unsafe) tells the compiler so.
+                    let group = DispatchGroup()
+                    nonisolated(unsafe) var outputData = Data()
+                    nonisolated(unsafe) var errorData = Data()
+                    group.enter()
+                    DispatchQueue.global(qos: .utility).async { outputData = (try? outHandle.readToEnd()) ?? Data(); group.leave() }
+                    group.enter()
+                    DispatchQueue.global(qos: .utility).async { errorData = (try? errHandle.readToEnd()) ?? Data(); group.leave() }
+                    group.wait()
+                    proc.waitUntilExit()
 
-                // The user hit Stop: the cancellation handler terminated the process.
-                if Task.isCancelled {
-                    debugLog("[ERROR] \(repoName) cancelled: \(command)")
-                    throw GitServiceError.commandFailed("Git command cancelled")
+                    let output = String(data: outputData, encoding: .utf8) ?? ""
+                    let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+                    if proc.terminationStatus != 0 && !allowNonZeroExit {
+                        let detail = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        debugLog("[ERROR] \(repoName) exit \(proc.terminationStatus): \(command) — \(detail.isEmpty ? "Unknown error" : detail)")
+                        state.finish(.failure(GitServiceError.commandFailed(detail.isEmpty ? "Unknown error" : detail)))
+                    } else {
+                        state.finish(.success(output))
+                    }
                 }
 
-                let output = String(data: outputData, encoding: .utf8) ?? ""
-                let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
-
-                if process.terminationStatus != 0 && !allowNonZeroExit {
-                    let detail = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-                    debugLog("[ERROR] \(repoName) exit \(process.terminationStatus): \(command) — \(detail.isEmpty ? "Unknown error" : detail)")
-                    throw GitServiceError.commandFailed(detail.isEmpty ? "Unknown error" : detail)
+                // Timeout: kill git and resolve immediately, without waiting on the reader threads.
+                // SIGTERM then SIGKILL — SIGKILL can't be caught or blocked, so a git that ignores
+                // SIGTERM (or is wedged) still dies. Guard pid > 0: kill(0, …) hits our own group.
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                    guard !state.isFinished else { return }
+                    debugLog("[TIMEOUT] \(repoName) exceeded \(String(format: "%.0f", timeout))s, killing: \(command)")
+                    if proc.isRunning {
+                        proc.terminate()
+                        if proc.processIdentifier > 0 { kill(proc.processIdentifier, SIGKILL) }
+                    }
+                    state.finish(.failure(GitServiceError.timedOut(command)))
                 }
-
-                return output
-            } catch let error as GitServiceError {
-                throw error
-            } catch {
-                if logErrors { debugLog("[ERROR] \(repoName) failed to launch: \(command) — \(error.localizedDescription)") }
-                throw GitServiceError.commandFailed(error.localizedDescription)
             }
         } onCancel: {
-            if process.isRunning { process.terminate() }
-        }
-    }
-
-    /// Read a file handle to EOF on Dispatch's global pool rather than the Swift cooperative
-    /// thread pool. `readToEnd()` blocks its thread until EOF, and blocking a cooperative worker
-    /// is unsafe: a batch of concurrent git commands would park every worker in a blocked call,
-    /// deadlocking Swift concurrency. The global pool grows on demand, so it can't be starved
-    /// this way.
-    private nonisolated func readPipeToEnd(_ handle: FileHandle) async -> Data {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                let data = (try? handle.readToEnd()) ?? Data()
-                continuation.resume(returning: data)
+            if proc.isRunning {
+                proc.terminate()
+                if proc.processIdentifier > 0 { kill(proc.processIdentifier, SIGKILL) }
             }
+            state.finish(.failure(GitServiceError.commandFailed("Git command cancelled")))
         }
     }
 
@@ -737,6 +810,82 @@ actor GitService {
                 status: .error(error.localizedDescription),
                 hasUncommittedChanges: false
             )
+        }
+    }
+}
+
+/// One-shot resolution for a single git run. Whichever of the worker, the timeout, or a user Stop
+/// gets there first resumes the continuation exactly once; every later `finish` is ignored. This
+/// is what lets the timeout return to the caller without waiting on a reader thread that may never
+/// unblock. Lock-backed so it's safe to call from any dispatch thread and the cancellation handler.
+private final class RunState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<String, Error>?
+    private var finished = false
+
+    func attach(_ continuation: CheckedContinuation<String, Error>) {
+        lock.lock()
+        // A Stop can fire onCancel (→ finish) before the operation attaches its continuation.
+        // Resume right away in that case, otherwise the continuation would never be resumed.
+        if finished {
+            lock.unlock()
+            continuation.resume(throwing: GitServiceError.commandFailed("Git command cancelled"))
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return finished }
+
+    func finish(_ result: Result<String, Error>) {
+        lock.lock()
+        if finished { lock.unlock(); return }
+        finished = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+}
+
+/// A serial async gate: only one holder runs at a time; others await their turn in FIFO order.
+///
+/// Backed by a plain `NSLock` rather than actor isolation so `release()` is synchronous and can
+/// be called from a `defer` inside the nonisolated `runGitCommand`. Ownership is handed off
+/// directly to the next waiter on release, so the gate is never momentarily free between a
+/// release and the next acquire (no lost wakeups, strict FIFO).
+///
+/// A task cancelled while waiting stays queued until its turn, then proceeds — `runGitCommand`
+/// itself checks `Task.isCancelled` and terminates its process, so nothing blocks permanently.
+private final class SerialGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isBusy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        lock.lock()
+        if !isBusy {
+            isBusy = true
+            lock.unlock()
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+            lock.unlock()
+        }
+    }
+
+    func release() {
+        lock.lock()
+        if waiters.isEmpty {
+            isBusy = false
+            lock.unlock()
+        } else {
+            // Hand ownership straight to the next waiter; `isBusy` stays true.
+            let next = waiters.removeFirst()
+            lock.unlock()
+            next.resume()
         }
     }
 }

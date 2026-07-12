@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 // One RepoViewModel == one git repository, and it is the single source of truth for that
 // repo. The same reference is passed into every view that renders the repo (list row, its
@@ -10,46 +11,48 @@ import SwiftUI
 // this is what SwiftUI observation expects, so reassigning `repo` (a value type) reliably
 // invalidates every view that read it, with no manual change signal needed for in-list rows.
 @MainActor
-@Observable
-final class RepoViewModel: Identifiable {
+final class RepoViewModel: ObservableObject, Identifiable {
     // The repo data model. Reassigned wholesale on refresh; observation tracks the accessors.
-    var repo: GitRepo
+    @Published var repo: GitRepo
     // Selection lives here (replaces the coordinator's selectedRepoIDs set).
-    var isSelected: Bool = false
+    @Published var isSelected: Bool = false
     // True while a git operation on this repo is in flight (replaces operatingRepoIDs).
-    var isOperating: Bool = false
+    @Published var isOperating: Bool = false
     // When true, perform() skips its post-operation reload. Set by the batch coordinator so a
     // multi-repo operation never runs `git status` on one repo while others are still being
     // written — that concurrency was hanging batches. The coordinator reloads the operated
     // repos once, after the whole batch finishes.
-    var deferReload: Bool = false
+    @Published var deferReload: Bool = false
     // Set after a history-rewriting op (rebase/squash/reset) so the diff window offers Force
     // Push as the primary action; cleared once a push/force-push lands. Session-only — not
     // persisted, resets to false on relaunch.
-    var needsForcePush: Bool = false
+    @Published var needsForcePush: Bool = false
     // Operation failures for this repo, shown in the top-right banner stack (row + diff
     // window). Never auto-cleared — the user dismisses each banner explicitly.
-    var banners: [BannerItem] = []
+    @Published var banners: [BannerItem] = []
     // Diff-window changed-files selection, kept on the VM so it survives closing/reopening the
     // window (session-only). `knownFilePaths` remembers every path we've seen so a reopen
     // restores the saved checkbox state instead of re-checking everything.
-    var checkedPaths: Set<String> = []
-    var knownFilePaths: Set<String> = []
+    @Published var checkedPaths: Set<String> = []
+    @Published var knownFilePaths: Set<String> = []
     // Bumps on every refresh / operation. The detached diff window watches this via
     // `.onChange` to reload its content — GitRepo's Equatable only compares url, so
     // `.onChange(of: repo)` wouldn't fire on a status/branch change. In-list rows don't need
     // it; they observe `repo` directly now that the type is uniformly @MainActor.
-    private(set) var changeToken: Int = 0
+    @Published private(set) var changeToken: Int = 0
 
     // Stable across the object's life (derived from the repo path, which never changes here).
     let id: UUID
 
-    private let gitService: GitService
+    // This repo's single git actor. Every git command for this repo — row operations, the diff
+    // window's loads/commits, the branch sheets' listings — goes through this one instance, so
+    // they all run serially (see GitService's SerialGate). Exposed (not private) so the diff
+    // window and sheets share it instead of spinning up their own unserialized GitService.
+    let gitService = GitService()
 
-    init(repo: GitRepo, gitService: GitService) {
+    init(repo: GitRepo) {
         self.repo = repo
         self.id = repo.id
-        self.gitService = gitService
     }
 
     // MARK: - Refresh

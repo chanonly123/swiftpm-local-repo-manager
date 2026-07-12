@@ -1,35 +1,37 @@
 import Foundation
 import SwiftUI
+import Combine
 
 @MainActor
-@Observable
-class RepoManagerViewModel {
+class RepoManagerViewModel: ObservableObject {
     // One RepoViewModel per discovered repo — each is the single source of truth for its repo
     // and is shared by reference into the row / sheets / diff window.
-    var repoViewModels: [RepoViewModel] = []
-    var isScanning = false
-    var isPerformingOperation = false
+    @Published var repoViewModels: [RepoViewModel] = []
+    @Published var isScanning = false
+    @Published var isPerformingOperation = false
     // Human-readable label of the batch operation currently running, shown in the toolbar.
-    var currentOperationLabel = ""
-    var currentDirectory: URL?
-    var operationResults: [OperationResult] = []
-    var maxConcurrentOperations = 4
-    var showingRecheckoutMenu = false
-    var customBranchInput = ""
+    @Published var currentOperationLabel = ""
+    @Published var currentDirectory: URL?
+    @Published var operationResults: [OperationResult] = []
+    @Published var maxConcurrentOperations = 4
+    @Published var showingRecheckoutMenu = false
+    @Published var customBranchInput = ""
     // Union of branches across the selected repos, shown in the recheckout popup
-    var recheckoutBranches: [String] = []
-    var showingHardResetConfirmation = false
-    var showingCleanConfirmation = false
-    var showingForcePushConfirmation = false
-    var xcodeProjects: [XcodeProject] = []
+    @Published var recheckoutBranches: [String] = []
+    @Published var showingHardResetConfirmation = false
+    @Published var showingCleanConfirmation = false
+    @Published var showingForcePushConfirmation = false
+    @Published var xcodeProjects: [XcodeProject] = []
     // Tab-wide banners (scan failures etc.); the tab's banner stack also shows each repo's own.
-    var tabBanners: [BannerItem] = []
+    @Published var tabBanners: [BannerItem] = []
     // True only for the tab currently shown, so FSEvents monitoring runs for the active tab only.
-    private(set) var isActiveTab = false
-    private(set) var isStopping = false
+    @Published private(set) var isActiveTab = false
+    @Published private(set) var isStopping = false
     // The running batch, held so Stop can cancel it (which terminates in-flight git processes).
     private var operationTask: Task<Void, Never>?
 
+    // Directory-level git actor, used only for the initial repo scan. Per-repo commands run on
+    // each RepoViewModel's own GitService (see RepoViewModel.gitService).
     private let gitService = GitService()
     private let repoService = RepoService()
     private let fsEventsMonitor = FSEventsMonitor()
@@ -241,9 +243,11 @@ class RepoManagerViewModel {
 
     // Scan for repositories in the current directory
     func scanRepositories() async {
+        // TEMP DIAGNOSTIC: capture who is triggering a scan.
+        debugLog("[TRACE] scanRepositories from:\n" + Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: "\n"))
         guard let directory = currentDirectory, !isScanning else { return }
 
-        debugLog("[DEBUG] Scanning directory: \(directory.path)")
+        debugLog("[DEBUG] scanRepositories directory: \(directory.path)")
 
         // Stop monitoring previous repositories
         fsEventsMonitor.stopMonitoring()
@@ -258,12 +262,12 @@ class RepoManagerViewModel {
         do {
             // Scan for git repositories
             let repoURLs = try await gitService.scanForRepositories(at: directory)
-            debugLog("[DEBUG] Found \(repoURLs.count) git repositories")
+            debugLog("[DEBUG] scanRepositories Found \(repoURLs.count) git repositories")
 
             // Scan for Xcode projects
             let projects = try await repoService.findXcodeProjects(in: directory)
             xcodeProjects = projects
-            debugLog("[DEBUG] Found \(projects.count) Xcode projects")
+            debugLog("[DEBUG] scanRepositories Found \(projects.count) Xcode projects")
 
             // Build the list, reusing cached VMs so their data (and selection) persist across
             // scans. Genuinely new repos start in .loading until their first refresh lands.
@@ -276,8 +280,7 @@ class RepoManagerViewModel {
                         currentBranch: nil,
                         status: .loading,
                         hasUncommittedChanges: false
-                    ),
-                    gitService: gitService
+                    )
                 )
                 repoCache[url] = vm
                 return vm
@@ -387,8 +390,9 @@ class RepoManagerViewModel {
     // selected repos) to keep the list fast and representative.
     func loadRecheckoutBranches() async {
         recheckoutBranches = []
-        guard let firstRepo = selectedRepositories.first else { return }
-        let branches = (try? await gitService.getBranches(at: firstRepo.url)) ?? []
+        // Use the repo's own service so this listing serializes with any operation running on it.
+        guard let firstVM = selectedRepositoryVMs.first else { return }
+        let branches = (try? await firstVM.gitService.getBranches(at: firstVM.repo.url)) ?? []
         recheckoutBranches = branches.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
