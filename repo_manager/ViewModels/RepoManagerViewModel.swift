@@ -247,7 +247,7 @@ class RepoManagerViewModel: ObservableObject {
         debugLog("[TRACE] scanRepositories from:\n" + Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: "\n"))
         guard let directory = currentDirectory, !isScanning else { return }
 
-        debugLog("[DEBUG] Scanning directory: \(directory.path)")
+        debugLog("[DEBUG] scanRepositories directory: \(directory.path)")
 
         // Stop monitoring previous repositories
         fsEventsMonitor.stopMonitoring()
@@ -262,12 +262,12 @@ class RepoManagerViewModel: ObservableObject {
         do {
             // Scan for git repositories
             let repoURLs = try await gitService.scanForRepositories(at: directory)
-            debugLog("[DEBUG] Found \(repoURLs.count) git repositories")
+            debugLog("[DEBUG] scanRepositories Found \(repoURLs.count) git repositories")
 
             // Scan for Xcode projects
             let projects = try await repoService.findXcodeProjects(in: directory)
             xcodeProjects = projects
-            debugLog("[DEBUG] Found \(projects.count) Xcode projects")
+            debugLog("[DEBUG] scanRepositories Found \(projects.count) Xcode projects")
 
             // Build the list, reusing cached VMs so their data (and selection) persist across
             // scans. Genuinely new repos start in .loading until their first refresh lands.
