@@ -15,7 +15,8 @@ struct DeleteBranchSheet: View {
     @State private var branches: [String] = []
     @State private var deleteRemote = false
 
-    private let git = GitService()
+    // Share the repo's git actor so branch listing serializes with its operations.
+    private var git: GitService { vm.gitService }
     private let suggestionLimit = 50
 
     private var trimmedQuery: String {

@@ -30,6 +30,8 @@ class RepoManagerViewModel: ObservableObject {
     // The running batch, held so Stop can cancel it (which terminates in-flight git processes).
     private var operationTask: Task<Void, Never>?
 
+    // Directory-level git actor, used only for the initial repo scan. Per-repo commands run on
+    // each RepoViewModel's own GitService (see RepoViewModel.gitService).
     private let gitService = GitService()
     private let repoService = RepoService()
     private let fsEventsMonitor = FSEventsMonitor()
@@ -241,6 +243,8 @@ class RepoManagerViewModel: ObservableObject {
 
     // Scan for repositories in the current directory
     func scanRepositories() async {
+        // TEMP DIAGNOSTIC: capture who is triggering a scan.
+        debugLog("[TRACE] scanRepositories from:\n" + Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: "\n"))
         guard let directory = currentDirectory, !isScanning else { return }
 
         debugLog("[DEBUG] Scanning directory: \(directory.path)")
@@ -276,8 +280,7 @@ class RepoManagerViewModel: ObservableObject {
                         currentBranch: nil,
                         status: .loading,
                         hasUncommittedChanges: false
-                    ),
-                    gitService: gitService
+                    )
                 )
                 repoCache[url] = vm
                 return vm
@@ -387,8 +390,9 @@ class RepoManagerViewModel: ObservableObject {
     // selected repos) to keep the list fast and representative.
     func loadRecheckoutBranches() async {
         recheckoutBranches = []
-        guard let firstRepo = selectedRepositories.first else { return }
-        let branches = (try? await gitService.getBranches(at: firstRepo.url)) ?? []
+        // Use the repo's own service so this listing serializes with any operation running on it.
+        guard let firstVM = selectedRepositoryVMs.first else { return }
+        let branches = (try? await firstVM.gitService.getBranches(at: firstVM.repo.url)) ?? []
         recheckoutBranches = branches.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 

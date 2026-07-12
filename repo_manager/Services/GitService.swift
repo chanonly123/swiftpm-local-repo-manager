@@ -22,6 +22,13 @@ enum GitServiceError: LocalizedError {
 
 actor GitService {
     private let gitPath: String
+    // Per-instance serial gate. Each RepoViewModel owns one GitService, and every command on
+    // this instance goes through `runGitCommand`, which acquires this gate — so only one git
+    // process runs at a time for a given repo. An `actor` alone can't guarantee this: actors
+    // are reentrant, so any `await` inside an isolated method lets the next call interleave.
+    // The gate holds across the whole command (spawn → drain → exit), giving true serial
+    // execution. Different repos use different instances and still run fully in parallel.
+    private let gate = SerialGate()
 
     init() {
         // Try multiple git paths - /usr/bin/git uses xcrun which fails in sandbox
@@ -575,6 +582,11 @@ actor GitService {
 
     // Run a git command
     private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil, noOptionalLocks: Bool = false) async throws -> String {
+        // Serialize: wait until any in-flight command on this service finishes before starting.
+        // Released in the defer, whether the command succeeds, fails, or is cancelled (Stop).
+        await gate.acquire()
+        defer { gate.release() }
+
         let repoName = repoURL.lastPathComponent
         // --no-optional-locks stops read-only commands (status/diff) from taking index.lock
         // for their opportunistic index refresh, so they can never contend with a concurrent
@@ -737,6 +749,47 @@ actor GitService {
                 status: .error(error.localizedDescription),
                 hasUncommittedChanges: false
             )
+        }
+    }
+}
+
+/// A serial async gate: only one holder runs at a time; others await their turn in FIFO order.
+///
+/// Backed by a plain `NSLock` rather than actor isolation so `release()` is synchronous and can
+/// be called from a `defer` inside the nonisolated `runGitCommand`. Ownership is handed off
+/// directly to the next waiter on release, so the gate is never momentarily free between a
+/// release and the next acquire (no lost wakeups, strict FIFO).
+///
+/// A task cancelled while waiting stays queued until its turn, then proceeds — `runGitCommand`
+/// itself checks `Task.isCancelled` and terminates its process, so nothing blocks permanently.
+private final class SerialGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isBusy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        lock.lock()
+        if !isBusy {
+            isBusy = true
+            lock.unlock()
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+            lock.unlock()
+        }
+    }
+
+    func release() {
+        lock.lock()
+        if waiters.isEmpty {
+            isBusy = false
+            lock.unlock()
+        } else {
+            // Hand ownership straight to the next waiter; `isBusy` stays true.
+            let next = waiters.removeFirst()
+            lock.unlock()
+            next.resume()
         }
     }
 }

@@ -44,12 +44,15 @@ final class RepoViewModel: ObservableObject, Identifiable {
     // Stable across the object's life (derived from the repo path, which never changes here).
     let id: UUID
 
-    private let gitService: GitService
+    // This repo's single git actor. Every git command for this repo — row operations, the diff
+    // window's loads/commits, the branch sheets' listings — goes through this one instance, so
+    // they all run serially (see GitService's SerialGate). Exposed (not private) so the diff
+    // window and sheets share it instead of spinning up their own unserialized GitService.
+    let gitService = GitService()
 
-    init(repo: GitRepo, gitService: GitService) {
+    init(repo: GitRepo) {
         self.repo = repo
         self.id = repo.id
-        self.gitService = gitService
     }
 
     // MARK: - Refresh

@@ -42,7 +42,9 @@ struct DiffWindowView: View {
     // The hosting NSWindow, captured so we can keep its (non-SwiftUI) title in sync.
     @State private var hostWindow: NSWindow?
 
-    private let git = GitService()
+    // The repo's own git actor, shared with its row/sheets, so the window's loads and commits
+    // serialize with every other operation on this repo instead of racing on its own instance.
+    private var git: GitService { vm.gitService }
     private let sizeLimit = 1_000_000
     private let commitPageSize = 10
 

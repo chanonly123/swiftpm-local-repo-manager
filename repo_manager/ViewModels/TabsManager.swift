@@ -37,6 +37,8 @@ class TabsManager: ObservableObject {
 
     // Selecting a tab makes it the only one monitoring the filesystem (FSEvents).
     func selectTab(_ id: UUID) {
+        // TEMP DIAGNOSTIC: capture who is triggering tab selection (sync stack = real caller).
+        debugLog("[TRACE] selectTab(\(id)) from:\n" + Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: "\n"))
         for (tabID, vm) in viewModels where tabID != id { vm.deactivate() }
         selectedTabID = id
         viewModels[id]?.activate()

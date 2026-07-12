@@ -15,7 +15,8 @@ struct NewBranchSheet: View {
 
     private enum ChangeHandling { case bring, stash }
 
-    private let git = GitService()
+    // Share the repo's git actor so branch listing serializes with its operations.
+    private var git: GitService { vm.gitService }
 
     private var trimmedName: String {
         branchName.trimmingCharacters(in: .whitespacesAndNewlines)
