@@ -41,6 +41,45 @@ final class RepoViewModel: ObservableObject, Identifiable {
     // it; they observe `repo` directly now that the type is uniformly @MainActor.
     @Published private(set) var changeToken: Int = 0
 
+    // MARK: - Diff window state
+    //
+    // The diff/history window renders no repo data of its own — everything below lives here so
+    // it survives closing/reopening the window and stays in lockstep with the shared repo. The
+    // loading/action logic that fills these lives in RepoViewModel+DiffWindow.swift.
+
+    // Changed files and the selected file's diff.
+    @Published var files: [FileEntry] = []
+    @Published var selectedPath: String?
+    @Published var diffLines: [DiffLine] = []
+    @Published var loadingFiles = true
+    @Published var loadingDiff = false
+    @Published var tooLarge = false
+
+    // Commit composer state.
+    @Published var commitMessage = ""
+    @Published var isCommitting = false
+    @Published var commitError: String?
+    @Published var gitIdentity: (name: String, email: String) = ("", "")
+    // Conflicted files that still contain leftover conflict markers (unresolved). Refreshed by
+    // loadFiles(); once empty, the conflict warning gives way to the commit UI.
+    @Published var unresolvedConflicts: Set<String> = []
+
+    // Commit history (paged) and its selection.
+    @Published var commits: [CommitEntry] = []
+    @Published var selectedCommits: Set<String> = []
+    @Published var loadingCommits = true
+    @Published var loadingMoreCommits = false
+    @Published var hasMoreCommits = true
+
+    // History tab + stashes and their selection.
+    @Published var historyTab: HistoryTab = .commits
+    @Published var stashes: [StashEntry] = []
+    @Published var selectedStash: Set<String> = []
+    @Published var loadingStashes = true
+
+    let diffSizeLimit = 1_000_000
+    let commitPageSize = 10
+
     // Stable across the object's life (derived from the repo path, which never changes here).
     let id: UUID
 
