@@ -179,6 +179,16 @@ final class RepoViewModel: ObservableObject, Identifiable {
         return result
     }
 
+    // Publish a local-only branch (push -u origin <branch>). reload() afterwards refreshes
+    // hasRemoteBranch so the UI switches from Publish back to Push.
+    @discardableResult func publish() async -> OperationResult {
+        let result = await perform(.publish) {
+            try await self.gitService.publish(at: $0.url, branch: $0.currentBranch ?? "HEAD")
+        }
+        if result.success { needsForcePush = false }
+        return result
+    }
+
     @discardableResult func forcePush() async -> OperationResult {
         let result = await perform(.forcePush) { try await self.gitService.forcePush(at: $0.url) }
         if result.success { needsForcePush = false }

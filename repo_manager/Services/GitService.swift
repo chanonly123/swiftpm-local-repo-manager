@@ -420,6 +420,11 @@ actor GitService {
         try await runGitCommand(args: ["push", "--force-with-lease", "origin", "HEAD"], at: repoURL, timeout: GitService.networkTimeout)
     }
 
+    // Publish a local-only branch: push and set it to track origin/<branch>.
+    nonisolated func publish(at repoURL: URL, branch: String) async throws -> String {
+        try await runGitCommand(args: ["push", "--set-upstream", "origin", branch], at: repoURL, timeout: GitService.networkTimeout)
+    }
+
     // Get remote URL
     // Pull from remote
     nonisolated func pull(at repoURL: URL) async throws -> String {
@@ -566,8 +571,11 @@ actor GitService {
         return "✓ Cleaned \(removed) untracked/ignored item(s)"
     }
 
-    // Get ahead/behind counts relative to upstream
-    nonisolated func getAheadBehind(at repoURL: URL, branch: String) async -> (ahead: Int, behind: Int)? {
+    // Get ahead/behind counts relative to upstream, plus whether the branch is actually
+    // published (has its own remote branch / configured upstream — not just the fork-point
+    // fallback). `hasUpstream == false` means the branch exists only locally: the UI offers
+    // Publish instead of Push.
+    nonisolated func getAheadBehind(at repoURL: URL, branch: String) async -> (ahead: Int, behind: Int, hasUpstream: Bool)? {
         // Pick a remote ref to compare against. Prefer this branch's own remote
         // tracking branch, then its configured upstream, then the remote's default
         // branch (origin/HEAD). The fallbacks let a freshly created local branch —
@@ -576,6 +584,7 @@ actor GitService {
         // Verifying the ref first also avoids a noisy "ambiguous argument" error
         // on repos that have never been fetched.
         var remoteRef: String?
+        var hasUpstream = false
         for candidate in ["origin/\(branch)", "@{upstream}", "origin/HEAD"] {
             if (try? await runGitCommand(
                 args: ["rev-parse", "--verify", "--quiet", candidate],
@@ -583,6 +592,9 @@ actor GitService {
                 logErrors: false
             )) != nil {
                 remoteRef = candidate
+                // origin/HEAD is only the fork-point fallback — matching it does not mean
+                // this branch itself is published.
+                hasUpstream = candidate != "origin/HEAD"
                 break
             }
         }
@@ -594,7 +606,7 @@ actor GitService {
         ) else { return nil }
         let parts = output.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t")
         guard parts.count == 2, let ahead = Int(parts[0]), let behind = Int(parts[1]) else { return nil }
-        return (ahead, behind)
+        return (ahead, behind, hasUpstream)
     }
 
     // Run a git command, serialized on this service's gate and bounded by a timeout.
@@ -798,6 +810,7 @@ actor GitService {
                 hasConflicts: status.hasConflicts,
                 aheadCount: aheadBehind?.ahead,
                 behindCount: aheadBehind?.behind,
+                hasRemoteBranch: aheadBehind?.hasUpstream ?? false,
                 changedFilesCount: status.hasChanges ? changedFiles : nil,
                 inProgressOperation: getInProgressOperation(at: repoURL)
             )

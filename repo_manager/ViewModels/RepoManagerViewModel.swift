@@ -6,7 +6,12 @@ import Combine
 class RepoManagerViewModel: ObservableObject {
     // One RepoViewModel per discovered repo — each is the single source of truth for its repo
     // and is shared by reference into the row / sheets / diff window.
-    @Published var repoViewModels: [RepoViewModel] = []
+    // As a nested ObservableObject, a child's @Published changes don't propagate to this parent
+    // automatically, so the bottom bar's selection-derived UI (count, Actions enablement,
+    // select-all state) would go stale. `didSet` re-wires forwarding whenever the list changes.
+    @Published var repoViewModels: [RepoViewModel] = [] {
+        didSet { observeChildSelection() }
+    }
     @Published var isScanning = false
     @Published var isPerformingOperation = false
     // Human-readable label of the batch operation currently running, shown in the toolbar.
@@ -45,6 +50,9 @@ class RepoManagerViewModel: ObservableObject {
     // Session cache: reuse the same RepoViewModel for a path across re-scans/refreshes so
     // cached data shows immediately (no loading flash) and refresh happens silently behind it.
     private var repoCache: [URL: RepoViewModel] = [:]
+    // Subscriptions forwarding each child's selection/status/banner changes to this parent's
+    // objectWillChange (see observeChildSelection). Re-wired on every repoViewModels assignment.
+    private var childSelectionObservers: [AnyCancellable] = []
 
     // All repos as plain data (e.g. for Xcode dependency wiring).
     var repositories: [GitRepo] {
@@ -339,6 +347,22 @@ class RepoManagerViewModel: ObservableObject {
         // FSEvents feedback loops from our own git commands.
         debugLog("[DEBUG] File system change detected in: \(vm.repo.name)")
         await vm.refresh()
+    }
+
+    // Forward the child changes the bottom bar's derived UI depends on — selection, repo
+    // status (gates select-all), and banners — to this parent's objectWillChange, so those
+    // computed values (selectedCount, hasSelection, allSelected, banners) recompute live.
+    // Deliberately NOT the child's high-frequency diff-window state (commit message keystrokes,
+    // diff lines, loading flags) — the parent doesn't read those, so forwarding them would
+    // re-render the whole repo list needlessly. dropFirst() skips the emit-on-subscribe value.
+    private func observeChildSelection() {
+        childSelectionObservers = repoViewModels.flatMap { child in
+            [
+                child.$isSelected.dropFirst().sink { [weak self] _ in self?.objectWillChange.send() },
+                child.$repo.dropFirst().sink { [weak self] _ in self?.objectWillChange.send() },
+                child.$banners.dropFirst().sink { [weak self] _ in self?.objectWillChange.send() },
+            ]
+        }
     }
 
     // Select all repositories (excluding loading ones)

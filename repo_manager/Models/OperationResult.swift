@@ -15,6 +15,7 @@ struct OperationResult: Identifiable {
         case hardReset = "Hard Reset"
         case clean = "Clean"
         case push = "Push"
+        case publish = "Publish"
         case forcePush = "Force Push"
         case status = "Status"
         case refresh = "Refresh"

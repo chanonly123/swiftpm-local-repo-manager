@@ -99,33 +99,48 @@ struct DiffWindowView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
-                Menu {
-                    Button(action: { Task { await vm.push() } }) {
-                        Label("Push", systemImage: "arrow.up")
+                if repo.hasRemoteBranch {
+                    Menu {
+                        Button(action: { Task { await vm.push() } }) {
+                            Label("Push", systemImage: "arrow.up")
+                        }
+                        Divider()
+                        Button(role: .destructive, action: { showingForcePushConfirm = true }) {
+                            Label("Force Push…", systemImage: "exclamationmark.triangle")
+                        }
+                    } label: {
+                        Label(pushLabel, systemImage: vm.needsForcePush ? "exclamationmark.triangle" : "arrow.up")
+                    } primaryAction: {
+                        // After a rebase/squash/reset the local history diverges from origin, so a
+                        // plain push would be rejected — default the primary action to force push.
+                        if vm.needsForcePush {
+                            showingForcePushConfirm = true
+                        } else {
+                            Task { await vm.push() }
+                        }
                     }
-                    Divider()
-                    Button(role: .destructive, action: { showingForcePushConfirm = true }) {
-                        Label("Force Push…", systemImage: "exclamationmark.triangle")
+                    .menuStyle(.button)
+                    .fixedSize()
+                    .controlSize(.small)
+                    .tint(vm.needsForcePush ? .orange : nil)
+                    .disabled(vm.isOperating)
+                    .help(vm.needsForcePush
+                          ? "History was rewritten — force-push \(branch) to origin"
+                          : "Push \(branch) to origin")
+                } else {
+                    // No remote branch yet — first push publishes it and sets upstream.
+                    Button(action: { Task { await vm.publish() } }) {
+                        Label("Publish", systemImage: "arrow.up.circle")
                     }
-                } label: {
-                    Label(pushLabel, systemImage: vm.needsForcePush ? "exclamationmark.triangle" : "arrow.up")
-                } primaryAction: {
-                    // After a rebase/squash/reset the local history diverges from origin, so a
-                    // plain push would be rejected — default the primary action to force push.
-                    if vm.needsForcePush {
-                        showingForcePushConfirm = true
-                    } else {
-                        Task { await vm.push() }
-                    }
+                    .fixedSize()
+                    .controlSize(.small)
+                    .tint(.blue)
+                    .disabled(vm.isOperating)
+                    .help("Publish \(branch) to origin and set it as the upstream")
                 }
-                .menuStyle(.button)
-                .fixedSize()
-                .controlSize(.small)
-                .tint(vm.needsForcePush ? .orange : nil)
-                .disabled(vm.isOperating)
-                .help(vm.needsForcePush
-                      ? "History was rewritten — force-push \(branch) to origin"
-                      : "Push \(branch) to origin")
+
+                // Ahead / behind of the upstream (or fork point for an unpublished branch).
+                aheadBehindBadges
 
                 // All branch / working-tree operations collapsed into one menu.
                 Menu {
@@ -187,6 +202,31 @@ struct DiffWindowView: View {
         } message: {
             Text("This force-pushes \(repo.currentBranch ?? "the current branch") to origin with --force-with-lease.\n\nIt can overwrite remote history.")
         }
+    }
+
+    // Ahead / behind badges shown next to the push/publish control.
+    @ViewBuilder
+    private var aheadBehindBadges: some View {
+        if let ahead = repo.aheadCount, ahead > 0 {
+            aheadBehindBadge(count: ahead, systemImage: "arrow.up", color: .blue)
+        }
+        if let behind = repo.behindCount, behind > 0 {
+            aheadBehindBadge(count: behind, systemImage: "arrow.down", color: .orange)
+        }
+    }
+
+    private func aheadBehindBadge(count: Int, systemImage: String, color: Color) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: systemImage)
+                .font(.system(size: 9, weight: .semibold))
+            Text("\(count)")
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(color.opacity(0.12))
+        .clipShape(Capsule())
     }
 
     // "Push" plus the ahead count when the branch is ahead of its upstream.

@@ -15,6 +15,9 @@ struct GitRepo: Identifiable, Hashable {
     var hasConflicts: Bool = false
     var aheadCount: Int?
     var behindCount: Int?
+    // The current branch has a matching remote branch (origin/<branch>) or a configured
+    // upstream. false for a local-only branch never pushed — the UI offers Publish, not Push.
+    var hasRemoteBranch: Bool = false
     var changedFilesCount: Int?
     // An in-progress git operation (rebase/merge/cherry-pick/…) left mid-flight,
     // detected from marker files under `.git`. nil when the repo is in a normal state.
