@@ -332,7 +332,7 @@ extension TabContentView {
                         Label("Delete untracked files", systemImage: "trash")
                     }
                 } label: {
-                    Label("Actions", systemImage: "ellipsis.circle")
+                    Label("Actions", systemImage: "lines.measurement.vertical")
                 }
                 .frame(width: 150)
                 .disabled(!viewModel.hasSelection)

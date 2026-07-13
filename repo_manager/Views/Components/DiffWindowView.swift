@@ -174,7 +174,7 @@ struct DiffWindowView: View {
                         Label("Delete Branch…", systemImage: "trash")
                     }
                 } label: {
-                    Label("Actions", systemImage: "ellipsis.circle")
+                    Label("Actions", systemImage: "lines.measurement.vertical")
                 }
                 .menuStyle(.button)
                 .fixedSize()

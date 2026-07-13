@@ -19,182 +19,21 @@ struct RepoRowView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            // Selection checkbox
-            Button(action: { vm.isSelected.toggle() }) {
-                Image(systemName: vm.isSelected ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(vm.isSelected ? .blue : .secondary)
-                    .font(.system(size: 16))
-            }
-            .buttonStyle(.plain)
-            .disabled(repo.status == .loading)
-
-            // Repository name
-            Text(repo.name)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 200, alignment: .leading)
-
-
-            // Operation progress indicator
-            Color.clear
-                .frame(width: 20, height: 20)
-                .overlay {
-                    if vm.isOperating {
-                        ProgressView()
-                            .scaleEffect(0.4)
-                    }
-                }
-
-
-            // Status indicator
-            HStack(spacing: 3) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 6, height: 6)
-                if let changed = repo.changedFilesCount, changed > 0 {
-                    Text("\(changed) changed")
-                } else if repo.status == .loading {
-                    Text("Loading...")
-                } else {
-                    Text(repo.hasUncommittedChanges ? "Changes" : "")
-                }
-                if repo.hasConflicts {
-                    Text("⚠️")
-                        .font(.system(size: 11))
-                        .help("Merge conflicts detected")
-                }
-            }
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-            .frame(width: 100, alignment: .leading)
-
-            // Branch indicator
-            if let branch = repo.currentBranch {
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.branch")
-                        .font(.system(size: 11))
-                    Text(branch)
-                        .font(.system(size: 11))
-                }
-                .foregroundStyle(.secondary)
-            }
-
-            // Ahead / behind badges
-            HStack(spacing: 4) {
-                if let ahead = repo.aheadCount, ahead > 0 {
-                    aheadBehindBadge(count: ahead, systemImage: "arrow.up", color: .blue)
-                }
-                if let behind = repo.behindCount, behind > 0 {
-                    aheadBehindBadge(count: behind, systemImage: "arrow.down", color: .orange)
-                }
-            }
-
-            // In-progress operation badge (mid-rebase / merge / cherry-pick / am)
-            if let operation = repo.inProgressOperation {
-                HStack(spacing: 3) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 9))
-                    Text(operation.rawValue)
-                        .font(.system(size: 10, weight: .semibold))
-                }
-                .foregroundStyle(.red)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.red.opacity(0.12))
-                .clipShape(Capsule())
-                .help("\(operation.rawValue) in progress — use the git menu to continue or abort")
-            }
+            selectionCheckbox
+            repoName
+            operationProgressIndicator
+            statusIndicator
+            branchIndicator
+            aheadBehindBadges
+            inProgressOperationBadge
 
             Spacer()
 
-            // Xcode tasks menu (only when this repo contains Xcode projects)
-            if !xcodeProjects.isEmpty {
-                Menu {
-                    if xcodeProjects.count == 1 {
-                        xcodeActions(for: xcodeProjects[0])
-                    } else {
-                        ForEach(xcodeProjects) { project in
-                            Menu(project.relativePath(from: repo.url)) {
-                                xcodeActions(for: project)
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "hammer")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Xcode Tasks")
-                .disabled(vm.isOperating)
-            }
-
-            // Terminal button
-            Button(action: {
-                openInTerminal(url: repo.url)
-            }) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Open in Terminal")
-
-            // Git operations menu (merge / rebase, plus continue / abort when mid-operation)
-            Menu {
-                if let operation = repo.inProgressOperation {
-                    Section("\(operation.rawValue) in progress") {
-                        Button(action: { Task { await vm.continueInProgress() } }) {
-                            Label("Continue \(operation.rawValue)", systemImage: "arrow.right.circle")
-                        }
-                        Button(role: .destructive, action: { Task { await vm.abortInProgress() } }) {
-                            Label("Abort \(operation.rawValue)", systemImage: "xmark.circle")
-                        }
-                    }
-                    Divider()
-                }
-                Button(action: { showNewBranchSheet = true }) {
-                    Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
-                }
-                Divider()
-                Button(role: .destructive, action: { showDeleteBranchSheet = true }) {
-                    Label("Delete Branch…", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.system(size: 14))
-                    .foregroundStyle(repo.inProgressOperation != nil ? .red : .secondary)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help(repo.inProgressOperation != nil ? "\(repo.inProgressOperation!.rawValue) in progress — Git Operations" : "Git Operations (Branches)")
-            .disabled(repo.status == .loading || vm.isOperating)
-
-            // Diff / History button
-            Button(action: {
-                DiffWindowManager.open(for: vm)
-            }) {
-                Image(systemName: "arrow.left.arrow.right")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Open Diff & History")
-            .disabled(repo.status == .loading)
-
-            // Path button
-            Button(action: {
-                NSWorkspace.shared.open(repo.url)
-            }) {
-                Image(systemName: "folder")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Open in Finder")
+            xcodeTasksMenu
+            terminalButton
+            pathButton
+            gitOperationsMenu
+            diffHistoryButton
         }
         .textSelection(.enabled)
         .padding(.vertical, 4)
@@ -217,6 +56,227 @@ struct RepoRowView: View {
         .sheet(isPresented: $showDeleteBranchSheet) {
             DeleteBranchSheet(vm: vm)
         }
+    }
+
+    // MARK: - Row content
+
+    // Selection checkbox
+    private var selectionCheckbox: some View {
+        Button(action: { vm.isSelected.toggle() }) {
+            Image(systemName: vm.isSelected ? "checkmark.square.fill" : "square")
+                .foregroundStyle(vm.isSelected ? .blue : .secondary)
+                .font(.system(size: 16))
+        }
+        .buttonStyle(.plain)
+        .disabled(repo.status == .loading)
+    }
+
+    // Repository name
+    private var repoName: some View {
+        Text(repo.name)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.primary)
+            .frame(width: 200, alignment: .leading)
+    }
+
+    // Operation progress indicator
+    private var operationProgressIndicator: some View {
+        Color.clear
+            .frame(width: 20, height: 20)
+            .overlay {
+                if vm.isOperating {
+                    ProgressView()
+                        .scaleEffect(0.4)
+                }
+            }
+    }
+
+    // Status indicator
+    private var statusIndicator: some View {
+        HStack(spacing: 3) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 6, height: 6)
+            if let changed = repo.changedFilesCount, changed > 0 {
+                Text("\(changed) changed")
+            } else if repo.status == .loading {
+                Text("Loading...")
+            } else {
+                Text(repo.hasUncommittedChanges ? "Changes" : "")
+            }
+            if repo.hasConflicts {
+                Text("⚠️")
+                    .font(.system(size: 11))
+                    .help("Merge conflicts detected")
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .frame(width: 100, alignment: .leading)
+    }
+
+    // Branch indicator
+    @ViewBuilder
+    private var branchIndicator: some View {
+        if let branch = repo.currentBranch {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.branch")
+                    .font(.system(size: 11))
+                Text(branch)
+                    .font(.system(size: 11))
+            }
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    // Ahead / behind badges
+    private var aheadBehindBadges: some View {
+        HStack(spacing: 4) {
+            if let ahead = repo.aheadCount, ahead > 0 {
+                aheadBehindBadge(count: ahead, systemImage: "arrow.up", color: .blue)
+            }
+            if let behind = repo.behindCount, behind > 0 {
+                aheadBehindBadge(count: behind, systemImage: "arrow.down", color: .orange)
+            }
+        }
+    }
+
+    // In-progress operation badge (mid-rebase / merge / cherry-pick / am)
+    @ViewBuilder
+    private var inProgressOperationBadge: some View {
+        if let operation = repo.inProgressOperation {
+            HStack(spacing: 3) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                Text(operation.rawValue)
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(.red)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.red.opacity(0.12))
+            .clipShape(Capsule())
+            .help("\(operation.rawValue) in progress — use the git menu to continue or abort")
+        }
+    }
+
+    // Xcode tasks menu (only when this repo contains Xcode projects)
+    @ViewBuilder
+    private var xcodeTasksMenu: some View {
+        if !xcodeProjects.isEmpty {
+            Menu {
+                if xcodeProjects.count == 1 {
+                    xcodeActions(for: xcodeProjects[0])
+                } else {
+                    ForEach(xcodeProjects) { project in
+                        Menu(project.relativePath(from: repo.url)) {
+                            xcodeActions(for: project)
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "hammer")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Xcode Tasks")
+            .disabled(vm.isOperating)
+        }
+    }
+
+    // Terminal button
+    private var terminalButton: some View {
+        Button(action: {
+            openInTerminal(url: repo.url)
+        }) {
+            Image(systemName: "terminal")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Open in Terminal")
+    }
+
+    // Path button
+    private var pathButton: some View {
+        Button(action: {
+            NSWorkspace.shared.open(repo.url)
+        }) {
+            Image(systemName: "folder")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Open in Finder")
+    }
+
+    // Push button — publishes an unpublished branch, otherwise pushes to origin.
+    @ViewBuilder
+    private var pushButton: some View {
+        if repo.currentBranch != nil {
+            Button(repo.hasRemoteBranch ? "Push" : "Publish") {
+                Task {
+                    if repo.hasRemoteBranch { await vm.push() } else { await vm.publish() }
+                }
+            }
+            .font(.system(size: 14))
+            .buttonStyle(.plain)
+            .help(repo.hasRemoteBranch
+                  ? "Push \(repo.currentBranch ?? "") to origin"
+                  : "Publish \(repo.currentBranch ?? "") to origin and set upstream")
+            .disabled(repo.status == .loading || vm.isOperating)
+        }
+    }
+
+    // Git operations menu (merge / rebase, plus continue / abort when mid-operation)
+    private var gitOperationsMenu: some View {
+        Menu {
+            if let operation = repo.inProgressOperation {
+                Section("\(operation.rawValue) in progress") {
+                    Button(action: { Task { await vm.continueInProgress() } }) {
+                        Label("Continue \(operation.rawValue)", systemImage: "arrow.right.circle")
+                    }
+                    Button(role: .destructive, action: { Task { await vm.abortInProgress() } }) {
+                        Label("Abort \(operation.rawValue)", systemImage: "xmark.circle")
+                    }
+                }
+                Divider()
+            }
+            Button(action: { showNewBranchSheet = true }) {
+                Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
+            }
+            pushButton
+            Divider()
+            Button(role: .destructive, action: { showDeleteBranchSheet = true }) {
+                Label("Delete Branch…", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "lines.measurement.vertical")
+                .font(.system(size: 14))
+                .foregroundStyle(repo.inProgressOperation != nil ? .red : .secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(repo.inProgressOperation != nil ? "\(repo.inProgressOperation!.rawValue) in progress — Git Operations" : "Git Operations (Branches)")
+        .disabled(repo.status == .loading || vm.isOperating)
+    }
+
+    // Diff / History button
+    private var diffHistoryButton: some View {
+        Button(action: {
+            DiffWindowManager.open(for: vm)
+        }) {
+            Image(systemName: "arrow.left.arrow.right")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Open Diff & History")
+        .disabled(repo.status == .loading)
     }
 
     @ViewBuilder
