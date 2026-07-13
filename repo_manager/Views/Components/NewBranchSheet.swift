@@ -46,35 +46,9 @@ struct NewBranchSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Switch or Create Branch")
-                        .font(.headline)
-                    Text(repo.name)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if isFetching {
-                    HStack(spacing: 4) {
-                        ProgressView().controlSize(.small)
-                        Text("Fetching…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
+            header
 
-            // Source branch the new branch will be created from / switched away from
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.branch")
-                    .font(.system(size: 11))
-                Text("Current")
-                    .foregroundStyle(.secondary)
-                Text(repo.currentBranch ?? "current branch")
-                    .fontWeight(.medium)
-            }
-            .font(.system(size: 12))
+            currentBranchRow
 
             TextField("Branch name", text: $branchName)
                 .textFieldStyle(.roundedBorder)
@@ -83,33 +57,10 @@ struct NewBranchSheet: View {
             suggestionList
 
             if repo.hasUncommittedChanges {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("This repo has uncommitted changes:")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Picker("", selection: $changeHandling) {
-                        Text("Bring changes along").tag(ChangeHandling.bring)
-                        Text("Stash changes first").tag(ChangeHandling.stash)
-                    }
-                    .pickerStyle(.radioGroup)
-                    .labelsHidden()
-                }
+                changeHandlingPicker
             }
 
-            HStack {
-                if !trimmedName.isEmpty {
-                    Text(matchesExistingBranch ? "Switch to existing branch" : "Create new branch")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button(actionTitle, action: submit)
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(trimmedName.isEmpty)
-            }
+            actionButtons
         }
         .padding(20)
         .frame(width: 600)
@@ -121,6 +72,71 @@ struct NewBranchSheet: View {
             _ = try? await git.fetch(at: repo.url)
             isFetching = false
             branches = (try? await git.getBranches(at: repo.url)) ?? []
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Switch or Create Branch")
+                    .font(.headline)
+                Text(repo.name)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if isFetching {
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.small)
+                    Text("Fetching…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    // Source branch the new branch will be created from / switched away from
+    private var currentBranchRow: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "arrow.branch")
+                .font(.system(size: 11))
+            Text("Current")
+                .foregroundStyle(.secondary)
+            Text(repo.currentBranch ?? "current branch")
+                .fontWeight(.medium)
+        }
+        .font(.system(size: 12))
+    }
+
+    private var changeHandlingPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("This repo has uncommitted changes:")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("", selection: $changeHandling) {
+                Text("Bring changes along").tag(ChangeHandling.bring)
+                Text("Stash changes first").tag(ChangeHandling.stash)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+        }
+    }
+
+    private var actionButtons: some View {
+        HStack {
+            if !trimmedName.isEmpty {
+                Text(matchesExistingBranch ? "Switch to existing branch" : "Create new branch")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Cancel") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Button(actionTitle, action: submit)
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(trimmedName.isEmpty)
         }
     }
 

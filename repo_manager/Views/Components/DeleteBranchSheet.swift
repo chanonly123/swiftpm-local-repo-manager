@@ -42,25 +42,9 @@ struct DeleteBranchSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Delete Branch")
-                    .font(.headline)
-                Text(repo.name)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            header
 
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.branch")
-                    .font(.system(size: 11))
-                Text("Current")
-                    .foregroundStyle(.secondary)
-                Text(repo.currentBranch ?? "current branch")
-                    .fontWeight(.medium)
-                Text("(can't be deleted)")
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.system(size: 12))
+            currentBranchRow
 
             TextField("Branch name", text: $query)
                 .textFieldStyle(.roundedBorder)
@@ -74,26 +58,54 @@ struct DeleteBranchSheet: View {
             }
             .toggleStyle(.checkbox)
 
-            HStack {
-                if let branch = selectedBranch {
-                    Text("Delete “\(branch)”\(deleteRemote ? " locally and on origin" : " locally")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Delete", action: submit)
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .disabled(selectedBranch == nil)
-            }
+            actionButtons
         }
         .padding(20)
         .frame(width: 600)
         .task {
             branches = (try? await git.getBranches(at: repo.url)) ?? []
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Delete Branch")
+                .font(.headline)
+            Text(repo.name)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var currentBranchRow: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "arrow.branch")
+                .font(.system(size: 11))
+            Text("Current")
+                .foregroundStyle(.secondary)
+            Text(repo.currentBranch ?? "current branch")
+                .fontWeight(.medium)
+            Text("(can't be deleted)")
+                .foregroundStyle(.tertiary)
+        }
+        .font(.system(size: 12))
+    }
+
+    private var actionButtons: some View {
+        HStack {
+            if let branch = selectedBranch {
+                Text("Delete “\(branch)”\(deleteRemote ? " locally and on origin" : " locally")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Cancel") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Button("Delete", action: submit)
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(selectedBranch == nil)
         }
     }
 

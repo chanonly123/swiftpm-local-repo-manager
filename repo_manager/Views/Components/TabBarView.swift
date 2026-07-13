@@ -18,31 +18,35 @@ struct TabBarView: View {
                 )
             }
 
-            // Add tab button
-            Button(action: onAddTab) {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
-                    )
-            }
-            .buttonStyle(.plain)
-            .help("New Tab")
-            .padding(.horizontal, 8)
-            .padding(.trailing, 4)
+            addTabButton
 
             Spacer(minLength: 0)
         }
         .frame(height: 32)
         .frame(maxWidth: .infinity)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    // Add tab button
+    private var addTabButton: some View {
+        Button(action: onAddTab) {
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .help("New Tab")
+        .padding(.horizontal, 8)
+        .padding(.trailing, 4)
     }
 }
 

@@ -5,45 +5,9 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Tab bar
-            TabBarView(
-                tabs: tabsManager.tabs,
-                selectedTabID: tabsManager.selectedTabID,
-                onSelectTab: { id in
-                    tabsManager.selectTab(id)
-                },
-                onCloseTab: { id in
-                    tabsManager.closeTab(id)
-                },
-                onAddTab: {
-                    tabsManager.addTab()
-                }
-            )
-
+            tabBar
             Divider()
-
-            // Tab content
-            if let viewModel = tabsManager.currentViewModel {
-                TabContentView(
-                    viewModel: viewModel,
-                    updateAvailable: tabsManager.isUpdateAvailable,
-                    onDirectorySelected: { url in
-                        if let tabID = tabsManager.selectedTabID {
-                            tabsManager.updateTabDirectory(tabID, directoryURL: url)
-                        }
-                    },
-                    validateDirectory: { url in
-                        if let existingID = tabsManager.existingTabID(for: url),
-                           existingID != tabsManager.selectedTabID {
-                            tabsManager.selectTab(existingID)
-                            return false
-                        }
-                        return true
-                    }
-                )
-            } else {
-                emptyTabView
-            }
+            tabContent
         }
         .textSelection(.enabled)
         .frame(minWidth: 800, minHeight: 600)
@@ -72,6 +36,49 @@ struct ContentView: View {
                 }
             }
         )
+    }
+
+    // Tab bar
+    private var tabBar: some View {
+        TabBarView(
+            tabs: tabsManager.tabs,
+            selectedTabID: tabsManager.selectedTabID,
+            onSelectTab: { id in
+                tabsManager.selectTab(id)
+            },
+            onCloseTab: { id in
+                tabsManager.closeTab(id)
+            },
+            onAddTab: {
+                tabsManager.addTab()
+            }
+        )
+    }
+
+    // Tab content — the selected tab's repositories, or a prompt to create one
+    @ViewBuilder
+    private var tabContent: some View {
+        if let viewModel = tabsManager.currentViewModel {
+            TabContentView(
+                viewModel: viewModel,
+                updateAvailable: tabsManager.isUpdateAvailable,
+                onDirectorySelected: { url in
+                    if let tabID = tabsManager.selectedTabID {
+                        tabsManager.updateTabDirectory(tabID, directoryURL: url)
+                    }
+                },
+                validateDirectory: { url in
+                    if let existingID = tabsManager.existingTabID(for: url),
+                       existingID != tabsManager.selectedTabID {
+                        tabsManager.selectTab(existingID)
+                        return false
+                    }
+                    return true
+                }
+            )
+        } else {
+            emptyTabView
+        }
     }
 
     private var emptyTabView: some View {
@@ -259,85 +266,99 @@ extension TabContentView {
 
             Spacer()
 
-            // Concurrent operations setting
-            HStack(spacing: 6) {
-                Text("Parallel:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Picker("", selection: $viewModel.maxConcurrentOperations) {
-                    Text("1").tag(1)
-                    Text("2").tag(2)
-                    Text("4").tag(4)
-                    Text("8").tag(8)
-                }
-                .pickerStyle(.menu)
-                .frame(width: 80)
-                .disabled(viewModel.isPerformingOperation)
-            }
+            parallelPicker
 
             // Operation buttons
             if viewModel.isPerformingOperation {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                    Text(viewModel.currentOperationLabel.isEmpty
-                         ? "Performing operation…"
-                         : "\(viewModel.currentOperationLabel.capitalized)…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Button("Stop") {
-                        viewModel.stopCurrentOperation()
-                    }
-                }
+                operationProgress
             } else {
-                Menu {
-                    Button(action: {
-                        Task { await viewModel.fetchSelected() }
-                    }) {
-                        Label("Fetch", systemImage: "arrow.down.circle")
-                    }
-
-                    Button(action: {
-                        viewModel.showingRecheckoutMenu = true
-                    }) {
-                        Label("Recheckout", systemImage: "arrow.clockwise.circle")
-                    }
-
-                    Divider()
-
-                    Button(action: {
-                        Task { await viewModel.pushSelected() }
-                    }) {
-                        Label("Push", systemImage: "arrow.up.circle")
-                    }
-
-                    Button(role: .destructive, action: {
-                        viewModel.showingForcePushConfirmation = true
-                    }) {
-                        Label("Force Push", systemImage: "arrow.up.circle.fill")
-                    }
-
-                    Divider()
-
-                    Button(role: .destructive, action: {
-                        viewModel.showingHardResetConfirmation = true
-                    }) {
-                        Label("Hard Reset", systemImage: "exclamationmark.triangle")
-                    }
-
-                    Button(role: .destructive, action: {
-                        viewModel.showingCleanConfirmation = true
-                    }) {
-                        Label("Delete untracked files", systemImage: "trash")
-                    }
-                } label: {
-                    Label("Actions", systemImage: "lines.measurement.vertical")
-                }
-                .frame(width: 150)
-                .disabled(!viewModel.hasSelection)
+                actionsMenu
             }
         }
+    }
+
+    // Concurrent operations setting
+    private var parallelPicker: some View {
+        HStack(spacing: 6) {
+            Text("Parallel:")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("", selection: $viewModel.maxConcurrentOperations) {
+                Text("1").tag(1)
+                Text("2").tag(2)
+                Text("4").tag(4)
+                Text("8").tag(8)
+            }
+            .pickerStyle(.menu)
+            .frame(width: 80)
+            .disabled(viewModel.isPerformingOperation)
+        }
+    }
+
+    // Live progress + Stop while a batch operation runs
+    private var operationProgress: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .scaleEffect(0.7)
+            Text(viewModel.currentOperationLabel.isEmpty
+                 ? "Performing operation…"
+                 : "\(viewModel.currentOperationLabel.capitalized)…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Stop") {
+                viewModel.stopCurrentOperation()
+            }
+        }
+    }
+
+    // Batch git operations for the selected repositories
+    private var actionsMenu: some View {
+        Menu {
+            Button(action: {
+                Task { await viewModel.fetchSelected() }
+            }) {
+                Label("Fetch", systemImage: "arrow.down.circle")
+            }
+
+            Button(action: {
+                viewModel.showingRecheckoutMenu = true
+            }) {
+                Label("Recheckout", systemImage: "arrow.clockwise.circle")
+            }
+
+            Divider()
+
+            Button(action: {
+                Task { await viewModel.pushSelected() }
+            }) {
+                Label("Push", systemImage: "arrow.up.circle")
+            }
+
+            Button(role: .destructive, action: {
+                viewModel.showingForcePushConfirmation = true
+            }) {
+                Label("Force Push", systemImage: "arrow.up.circle.fill")
+            }
+
+            Divider()
+
+            Button(role: .destructive, action: {
+                viewModel.showingHardResetConfirmation = true
+            }) {
+                Label("Hard Reset", systemImage: "exclamationmark.triangle")
+            }
+
+            Button(role: .destructive, action: {
+                viewModel.showingCleanConfirmation = true
+            }) {
+                Label("Delete untracked files", systemImage: "trash")
+            }
+        } label: {
+            Label("Actions", systemImage: "lines.measurement.vertical")
+        }
+        .frame(width: 150)
+        .disabled(!viewModel.hasSelection)
     }
 
     // MARK: - Loading View

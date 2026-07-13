@@ -10,14 +10,7 @@ struct BannerStackView: View {
     var body: some View {
         if !banners.isEmpty {
             VStack(alignment: .trailing, spacing: 6) {
-                if banners.count > 1, let onDismissAll {
-                    Button(action: onDismissAll) {
-                        Text("Dismiss all (\(banners.count))")
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                }
+                dismissAllButton
                 // Newest on top.
                 ForEach(banners.reversed()) { banner in
                     bannerRow(banner)
@@ -25,6 +18,18 @@ struct BannerStackView: View {
             }
             .padding(10)
             .frame(maxWidth: 380, alignment: .trailing)
+        }
+    }
+
+    @ViewBuilder
+    private var dismissAllButton: some View {
+        if banners.count > 1, let onDismissAll {
+            Button(action: onDismissAll) {
+                Text("Dismiss all (\(banners.count))")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
         }
     }
 

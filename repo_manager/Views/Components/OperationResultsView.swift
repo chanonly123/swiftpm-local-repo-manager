@@ -18,28 +18,7 @@ struct OperationResultsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Operation Errors")
-                        .font(.headline)
-
-                    Text("\(successCount) succeeded, \(failureCount) failed")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                        .font(.title3)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding()
-            .background(Color(nsColor: .controlBackgroundColor))
+            header
 
             Divider()
 
@@ -49,18 +28,46 @@ struct OperationResultsView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(errors) { result in
-                            resultRow(for: result)
-                            Divider()
-                        }
-                    }
-                }
+                errorList
             }
         }
         .textSelection(.enabled)
         .frame(width: 400, height: 500)
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Operation Errors")
+                    .font(.headline)
+
+                Text("\(successCount) succeeded, \(failureCount) failed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .font(.title3)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding()
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var errorList: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(errors) { result in
+                    resultRow(for: result)
+                    Divider()
+                }
+            }
+        }
     }
 
     @ViewBuilder

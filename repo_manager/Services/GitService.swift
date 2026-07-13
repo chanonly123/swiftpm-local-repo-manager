@@ -234,6 +234,10 @@ actor GitService {
     // Continue an in-progress operation after conflicts are resolved. GIT_EDITOR=true accepts the
     // default commit message non-interactively so the command can't hang waiting on an editor.
     nonisolated func continueInProgress(at repoURL: URL, operation: GitRepo.InProgressOperation) async throws -> String {
+        // Resolving conflicts by editing files leaves them unmerged until they're staged; git
+        // refuses --continue with "you must mark them as resolved" unless we `git add` first.
+        // Stage everything (the standard `git add .` after a conflict fix) so continue can proceed.
+        _ = try await runGitCommand(args: ["add", "-A"], at: repoURL)
         _ = try await runGitCommand(
             args: [operation.gitCommand, "--continue"],
             at: repoURL,
