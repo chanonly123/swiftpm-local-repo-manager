@@ -99,6 +99,14 @@ struct DiffWindowView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
+                // Fetch button — refresh remote-tracking refs (ahead/behind, new branches).
+                Button(action: { Task { await vm.fetch() } }) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .controlSize(.small)
+                .disabled(vm.isOperating)
+                .help("Fetch from origin")
+
                 if repo.hasRemoteBranch {
                     Menu {
                         Button(action: { Task { await vm.push() } }) {
@@ -192,6 +200,12 @@ struct DiffWindowView: View {
             }
 
             Spacer()
+
+            if vm.isOperating {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
