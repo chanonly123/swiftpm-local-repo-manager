@@ -111,6 +111,7 @@ extension RepoViewModel {
         guard let path, let entry = files.first(where: { $0.id == path }) else { return }
         selectedCommits = []
         selectedStash = []
+        clearRevisionFiles()
         Task { await loadDiff(entry: entry) }
     }
 
@@ -118,10 +119,12 @@ extension RepoViewModel {
         guard !hashes.isEmpty else { return }
         selectedPath = nil
         selectedStash = []
-        // Show a diff only when a single commit is selected; multi-select is for squashing.
+        // Show a file list + per-file diff only when a single commit is selected; multi-select
+        // is for squashing.
         if hashes.count == 1, let hash = hashes.first {
             Task { await loadCommitDiff(hash: hash) }
         } else {
+            clearRevisionFiles()
             diffLines = []
             tooLarge = false
         }
@@ -131,13 +134,38 @@ extension RepoViewModel {
         guard !refs.isEmpty else { return }
         selectedPath = nil
         selectedCommits = []
-        // Show a diff only when a single stash is selected; multi-select is for export.
+        // Show a file list + per-file diff only when a single stash is selected; multi-select
+        // is for export.
         if refs.count == 1, let ref = refs.first {
             Task { await loadStashDiff(ref: ref) }
         } else {
+            clearRevisionFiles()
             diffLines = []
             tooLarge = false
         }
+    }
+
+    // A file was picked in the history file list — load that file's diff within the
+    // currently-selected commit or stash.
+    func onSelectCommitFile(_ path: String?) {
+        guard let path else { return }
+        if selectedCommits.count == 1, let hash = selectedCommits.first {
+            // Skip if this file was just auto-loaded when the commit was selected.
+            guard loadedRevisionFileKey != commitFileKey(hash: hash, filePath: path) else { return }
+            Task { await loadCommitFileDiff(hash: hash, filePath: path) }
+        } else if selectedStash.count == 1, let ref = selectedStash.first {
+            guard loadedRevisionFileKey != stashFileKey(ref: ref, filePath: path) else { return }
+            Task { await loadStashFileDiff(ref: ref, filePath: path) }
+        }
+    }
+
+    private func commitFileKey(hash: String, filePath: String) -> String { "commit:\(hash)|\(filePath)" }
+    private func stashFileKey(ref: String, filePath: String) -> String { "stash:\(ref)|\(filePath)" }
+
+    private func clearRevisionFiles() {
+        commitFiles = []
+        selectedCommitFile = nil
+        loadedRevisionFileKey = nil
     }
 
     // MARK: - Data loading
@@ -239,17 +267,39 @@ extension RepoViewModel {
         }
     }
 
+    // Load the file list for a commit, then auto-select the first file's diff.
     func loadCommitDiff(hash: String) async {
+        loadingCommitFiles = true
+        diffLines = []
+        tooLarge = false
+        commitFiles = []
+        selectedCommitFile = nil
+        defer { loadingCommitFiles = false }
+        do {
+            let raw = try await git.getCommitFiles(at: repoURL, hash: hash)
+            commitFiles = raw.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
+            if let first = commitFiles.first {
+                selectedCommitFile = first.id
+                await loadCommitFileDiff(hash: hash, filePath: first.path)
+            }
+        } catch {
+            debugLog("[ERROR] RepoViewModel loadCommitDiff: \(error)")
+        }
+    }
+
+    // Diff of a single file within a commit.
+    func loadCommitFileDiff(hash: String, filePath: String) async {
+        loadedRevisionFileKey = commitFileKey(hash: hash, filePath: filePath)
         loadingDiff = true
         tooLarge = false
         diffLines = []
         defer { loadingDiff = false }
         do {
-            let raw = try await git.getCommitDiff(at: repoURL, hash: hash)
+            let raw = try await git.getCommitFileDiff(at: repoURL, hash: hash, filePath: filePath)
             guard raw.utf8.count <= diffSizeLimit else { tooLarge = true; return }
             diffLines = parseDiff(raw)
         } catch {
-            debugLog("[ERROR] RepoViewModel loadCommitDiff: \(error)")
+            debugLog("[ERROR] RepoViewModel loadCommitFileDiff: \(error)")
         }
     }
 
@@ -266,17 +316,39 @@ extension RepoViewModel {
         }
     }
 
+    // Load the file list for a stash, then auto-select the first file's diff.
     func loadStashDiff(ref: String) async {
+        loadingCommitFiles = true
+        diffLines = []
+        tooLarge = false
+        commitFiles = []
+        selectedCommitFile = nil
+        defer { loadingCommitFiles = false }
+        do {
+            let raw = try await git.getStashFiles(at: repoURL, ref: ref)
+            commitFiles = raw.map { FileEntry(id: $0.path, status: $0.status, path: $0.path) }
+            if let first = commitFiles.first {
+                selectedCommitFile = first.id
+                await loadStashFileDiff(ref: ref, filePath: first.path)
+            }
+        } catch {
+            debugLog("[ERROR] RepoViewModel loadStashDiff: \(error)")
+        }
+    }
+
+    // Diff of a single file within a stash.
+    func loadStashFileDiff(ref: String, filePath: String) async {
+        loadedRevisionFileKey = stashFileKey(ref: ref, filePath: filePath)
         loadingDiff = true
         tooLarge = false
         diffLines = []
         defer { loadingDiff = false }
         do {
-            let raw = try await git.getStashDiff(at: repoURL, ref: ref)
+            let raw = try await git.getStashFileDiff(at: repoURL, ref: ref, filePath: filePath)
             guard raw.utf8.count <= diffSizeLimit else { tooLarge = true; return }
             diffLines = parseDiff(raw)
         } catch {
-            debugLog("[ERROR] RepoViewModel loadStashDiff: \(error)")
+            debugLog("[ERROR] RepoViewModel loadStashFileDiff: \(error)")
         }
     }
 

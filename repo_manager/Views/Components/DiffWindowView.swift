@@ -60,6 +60,9 @@ struct DiffWindowView: View {
         .onChange(of: vm.selectedStash) { _, refs in
             vm.onSelectStash(refs)
         }
+        .onChange(of: vm.selectedCommitFile) { _, path in
+            vm.onSelectCommitFile(path)
+        }
         // The shared VM bumps changeToken on any refresh (FSEvents, app-active, our own ops),
         // so we reload the window's lists in lockstep — no NotificationCenter needed.
         .onChange(of: vm.changeToken) {
@@ -510,6 +513,13 @@ struct DiffWindowView: View {
         .padding(.vertical, 2)
         .help("\(commit.shortHash) — \(commit.subject)")
         .contextMenu {
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(commit.id, forType: .string)
+            } label: {
+                Label("Copy SHA", systemImage: "doc.on.doc")
+            }
+            Divider()
             if vm.selectedCommits.count <= 1 {
                 Button {
                     resetTargetCommit = commit
@@ -709,7 +719,28 @@ struct DiffWindowView: View {
 
     // MARK: - Diff panel
 
+    // A single commit or stash is selected — GitHub-Desktop style, the panel splits into a list
+    // of the files it touched (top) and the selected file's diff (bottom).
+    private var isViewingRevision: Bool {
+        vm.selectedCommits.count == 1 || vm.selectedStash.count == 1
+    }
+
+    @ViewBuilder
     private var diffPanel: some View {
+        if isViewingRevision {
+            VSplitView {
+                commitFilesSection
+                    .frame(minHeight: 100, idealHeight: 180)
+                diffSection
+                    .frame(minHeight: 200)
+            }
+        } else {
+            diffSection
+        }
+    }
+
+    // Header + the selected file's diff content.
+    private var diffSection: some View {
         VStack(spacing: 0) {
             Text(diffHeaderText)
                 .font(.system(size: 11, design: .monospaced))
@@ -724,8 +755,131 @@ struct DiffWindowView: View {
         }
     }
 
+    // The selected revision (a single commit or stash) whose files/metadata are shown.
+    private var selectedCommit: CommitEntry? {
+        guard vm.selectedCommits.count == 1, let hash = vm.selectedCommits.first else { return nil }
+        return vm.commits.first { $0.id == hash }
+    }
+
+    private var selectedStashEntry: StashEntry? {
+        guard vm.selectedStash.count == 1, let ref = vm.selectedStash.first else { return nil }
+        return vm.stashes.first { $0.id == ref }
+    }
+
+    // Top of the revision panel: changed-files list (left) + commit metadata (right).
+    private var commitFilesSection: some View {
+        HSplitView {
+            commitFilesList
+                .frame(minWidth: 220, idealWidth: 340, maxWidth: .infinity)
+            commitMetaSection
+                .frame(minWidth: 180, idealWidth: 240, maxWidth: 380)
+        }
+    }
+
+    // File list for the selected commit / stash.
+    private var commitFilesList: some View {
+        VStack(spacing: 0) {
+            sectionHeader("FILES CHANGED", count: vm.commitFiles.isEmpty ? nil : vm.commitFiles.count)
+            Divider()
+            if vm.loadingCommitFiles {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.commitFiles.isEmpty {
+                Text("No files changed")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: $vm.selectedCommitFile) {
+                    ForEach(vm.commitFiles) { file in
+                        commitFileRow(file).tag(file.id)
+                    }
+                }
+                .listStyle(.sidebar)
+            }
+        }
+    }
+
+    // Metadata for the selected commit (or stash): message, SHA, author, date, tags.
+    private var commitMetaSection: some View {
+        VStack(spacing: 0) {
+            sectionHeader(selectedStashEntry != nil ? "STASH" : "COMMIT")
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let commit = selectedCommit {
+                        Text(commit.subject)
+                            .font(.system(size: 12, weight: .semibold))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        metaField("SHA", value: commit.id, monospaced: true, copyable: true)
+                        metaField("Author", value: commit.author)
+                        metaField("Date", value: commit.relativeDate)
+                        if !commit.tags.isEmpty {
+                            metaField("Tags", value: commit.tags.joined(separator: ", "))
+                        }
+                    } else if let stash = selectedStashEntry {
+                        Text(stash.message)
+                            .font(.system(size: 12, weight: .semibold))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        metaField("Ref", value: stash.id, monospaced: true)
+                        metaField("Date", value: stash.relativeDate)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+            }
+        }
+    }
+
+    // One labelled metadata field. `copyable` adds a small copy button (used for the SHA).
+    private func metaField(_ label: String, value: String, monospaced: Bool = false, copyable: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text(value)
+                    .font(.system(size: 11, design: monospaced ? .monospaced : .default))
+                    .textSelection(.enabled)
+                    .lineLimit(monospaced ? 1 : 2)
+                    .truncationMode(.middle)
+                if copyable {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(value, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 10))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Copy \(label)")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func commitFileRow(_ entry: FileEntry) -> some View {
+        HStack(spacing: 6) {
+            Text(badge(entry.status))
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(.white)
+                .frame(width: 14, height: 14)
+                .background(badgeColor(entry.status))
+                .clipShape(RoundedRectangle(cornerRadius: 2))
+            Text(entry.path)
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(entry.path)
+        }
+    }
+
     private var diffHeaderText: String {
         if let path = vm.selectedPath { return path }
+        // In revision mode the header shows the selected file's path.
+        if isViewingRevision, let file = vm.selectedCommitFile { return file }
         if vm.selectedCommits.count == 1, let hash = vm.selectedCommits.first,
            let commit = vm.commits.first(where: { $0.id == hash }) {
             return "\(commit.shortHash)  \(commit.subject)"

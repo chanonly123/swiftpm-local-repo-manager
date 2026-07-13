@@ -283,9 +283,28 @@ actor GitService {
         return messages.joined(separator: "\n")
     }
 
-    // Full diff for a single commit
-    nonisolated func getCommitDiff(at repoURL: URL, hash: String) async throws -> String {
-        try await runGitCommand(args: ["show", "--no-color", hash], at: repoURL)
+    // Files changed in a commit (name-status vs its first parent). --format= drops the commit
+    // header so only the file list remains. Used to drive the per-file history view.
+    nonisolated func getCommitFiles(at repoURL: URL, hash: String) async throws -> [(status: String, path: String)] {
+        let output = try await runGitCommand(args: ["show", "--name-status", "--format=", "--no-color", hash], at: repoURL)
+        return parseNameStatus(output)
+    }
+
+    // Diff of a single file within a commit.
+    nonisolated func getCommitFileDiff(at repoURL: URL, hash: String, filePath: String) async throws -> String {
+        try await runGitCommand(args: ["show", "--no-color", "--format=", hash, "--", filePath], at: repoURL)
+    }
+
+    // Parse `git show/diff --name-status` output into (status, path) pairs. Rename/copy lines
+    // have the form "R100\told\tnew" — we report the new path.
+    private nonisolated func parseNameStatus(_ output: String) -> [(status: String, path: String)] {
+        output.components(separatedBy: .newlines).compactMap { line in
+            guard !line.isEmpty else { return nil }
+            let parts = line.components(separatedBy: "\t")
+            guard let code = parts.first, parts.count >= 2 else { return nil }
+            let path = parts.count >= 3 ? parts[parts.count - 1] : parts[1]
+            return (code, path)
+        }
     }
 
     // Cumulative patch between two revisions (`git diff <from> <to>`). Used to export the
@@ -319,6 +338,26 @@ actor GitService {
     nonisolated func getStashDiff(at repoURL: URL, ref: String) async throws -> String {
         try await runGitCommand(
             args: ["stash", "show", "-p", "--no-color", ref],
+            at: repoURL,
+            allowNonZeroExit: true
+        )
+    }
+
+    // Files changed in a stash entry (name-status). Used to drive the per-file history view.
+    nonisolated func getStashFiles(at repoURL: URL, ref: String) async throws -> [(status: String, path: String)] {
+        let output = try await runGitCommand(
+            args: ["stash", "show", "--name-status", "--no-color", ref],
+            at: repoURL,
+            allowNonZeroExit: true
+        )
+        return parseNameStatus(output)
+    }
+
+    // Diff of a single file within a stash. `git stash show` rejects a pathspec, so diff the
+    // stash against its base commit (first parent) and filter to the one file.
+    nonisolated func getStashFileDiff(at repoURL: URL, ref: String, filePath: String) async throws -> String {
+        try await runGitCommand(
+            args: ["diff", "--no-color", "\(ref)^1", ref, "--", filePath],
             at: repoURL,
             allowNonZeroExit: true
         )

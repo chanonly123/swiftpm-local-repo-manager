@@ -71,6 +71,16 @@ final class RepoViewModel: ObservableObject, Identifiable {
     @Published var loadingMoreCommits = false
     @Published var hasMoreCommits = true
 
+    // Files changed in the currently-selected commit/stash, and which one's diff is shown.
+    // GitHub-Desktop style: the history diff panel lists these files, then shows the selected
+    // file's diff in `diffLines`.
+    @Published var commitFiles: [FileEntry] = []
+    @Published var selectedCommitFile: String?
+    @Published var loadingCommitFiles = false
+    // The (revision + file) currently loaded into diffLines. Auto-selecting the first file loads
+    // it directly; this lets the selection's onChange skip re-loading that same file.
+    var loadedRevisionFileKey: String?
+
     // History tab + stashes and their selection.
     @Published var historyTab: HistoryTab = .commits
     @Published var stashes: [StashEntry] = []
