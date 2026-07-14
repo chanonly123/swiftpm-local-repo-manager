@@ -29,6 +29,18 @@ enum GitDesktopClient: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Well-known install locations, checked when LaunchServices lookup fails
+    /// (e.g. a sandboxed process, or a Homebrew Cask install not yet registered).
+    private var knownPaths: [String] {
+        switch self {
+        case .gitHubDesktop:
+            return ["/Applications/GitHub Desktop.app"]
+        case .sourceTree:
+            // Homebrew Cask installs it as "Sourcetree.app" (lowercase t).
+            return ["/Applications/Sourcetree.app", "/Applications/SourceTree.app"]
+        }
+    }
+
     /// The installed app's URL, or `nil` if it isn't installed.
     var applicationURL: URL? {
         for identifier in bundleIdentifiers {
@@ -36,7 +48,53 @@ enum GitDesktopClient: String, CaseIterable, Identifiable {
                 return url
             }
         }
+        for path in knownPaths where FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        // Last resort: ask Spotlight, which finds the app in any folder even when
+        // LaunchServices won't resolve it for this (sandboxed) process.
+        for identifier in bundleIdentifiers {
+            if let url = Self.spotlightURL(forBundleIdentifier: identifier) {
+                return url
+            }
+        }
         return nil
+    }
+
+    /// Cached Spotlight lookups — apps rarely move, so probe each bundle id at most
+    /// once per launch (spawning `mdfind` on every view render would be wasteful).
+    /// Negative results are cached too, so a missing app isn't re-queried.
+    private static var spotlightCache: [String: URL?] = [:]
+
+    private static func spotlightURL(forBundleIdentifier bundleIdentifier: String) -> URL? {
+        if let cached = spotlightCache[bundleIdentifier] { return cached }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        // bundleIdentifier is a compile-time constant (never user input), so this
+        // argv value is safe to interpolate into the Spotlight query.
+        process.arguments = ["kMDItemCFBundleIdentifier == '\(bundleIdentifier)'"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        var result: URL?
+        do {
+            try process.run()
+            // Drain before waiting so a large result set can't deadlock the pipe.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            if let output = String(data: data, encoding: .utf8),
+               let firstPath = output.split(separator: "\n").first.map(String.init),
+               FileManager.default.fileExists(atPath: firstPath) {
+                result = URL(fileURLWithPath: firstPath)
+            }
+        } catch {
+            debugLog("[ERROR] mdfind lookup failed for \(bundleIdentifier): \(error)")
+        }
+
+        spotlightCache[bundleIdentifier] = result
+        return result
     }
 
     var isInstalled: Bool { applicationURL != nil }
