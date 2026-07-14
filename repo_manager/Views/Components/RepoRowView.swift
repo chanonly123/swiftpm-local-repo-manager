@@ -45,10 +45,10 @@ struct RepoRowView: View {
         .cornerRadius(4)
         .opacity(vm.isOperating ? 0.8 : 1.0)
         .contentShape(Rectangle())
-        // Double-click anywhere on the row opens the diff & history window.
+        // Double-click anywhere on the row opens the repo in the first installed Git client.
         .onTapGesture(count: 2) {
             guard repo.status != .loading else { return }
-            DiffWindowManager.open(for: vm)
+            GitDesktopClient.installed.first?.open(repoURL: repo.url)
         }
         .sheet(isPresented: $showNewBranchSheet) {
             NewBranchSheet(vm: vm)
@@ -265,18 +265,38 @@ struct RepoRowView: View {
         .disabled(repo.status == .loading || vm.isOperating)
     }
 
-    // Diff / History button
+    // Git client button — opens the repo in GitHub Desktop / SourceTree.
+    // Shows a menu when both are installed, a single button when only one is.
+    @ViewBuilder
     private var diffHistoryButton: some View {
-        Button(action: {
-            DiffWindowManager.open(for: vm)
-        }) {
-            Image(systemName: "arrow.left.arrow.right")
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
+        let clients = GitDesktopClient.installed
+        if clients.count > 1 {
+            Menu {
+                ForEach(clients) { client in
+                    Button(action: { client.open(repoURL: repo.url) }) {
+                        Label("Open in \(client.displayName)", systemImage: client.systemImage)
+                    }
+                }
+            } label: {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Open in Git client")
+            .disabled(repo.status == .loading)
+        } else if let client = clients.first {
+            Button(action: { client.open(repoURL: repo.url) }) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Open in \(client.displayName)")
+            .disabled(repo.status == .loading)
         }
-        .buttonStyle(.plain)
-        .help("Open Diff & History")
-        .disabled(repo.status == .loading)
     }
 
     @ViewBuilder
