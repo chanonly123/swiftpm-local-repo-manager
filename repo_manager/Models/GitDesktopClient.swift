@@ -102,13 +102,35 @@ enum GitDesktopClient: String, CaseIterable, Identifiable {
     /// All clients currently installed on this machine.
     static var installed: [GitDesktopClient] { allCases.filter(\.isInstalled) }
 
-    /// Opens `repoURL` in this client. Returns `false` if the app isn't installed.
+    // MARK: - Preferred client (persisted)
+
+    private static let preferredClientKey = "preferredGitDesktopClient"
+
+    /// The client the user last opened a repo with, persisted across launches.
+    static var preferred: GitDesktopClient? {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: preferredClientKey) else { return nil }
+            return GitDesktopClient(rawValue: raw)
+        }
+        set { UserDefaults.standard.set(newValue?.rawValue, forKey: preferredClientKey) }
+    }
+
+    /// The client to use for a default (double-click) open: the last one the user
+    /// picked if it's still installed, otherwise the first installed client.
+    static var `default`: GitDesktopClient? {
+        if let preferred, preferred.isInstalled { return preferred }
+        return installed.first
+    }
+
+    /// Opens `repoURL` in this client and remembers it as the preferred client.
+    /// Returns `false` if the app isn't installed.
     @discardableResult
     func open(repoURL: URL) -> Bool {
         guard let appURL = applicationURL else {
             debugLog("[ERROR] \(displayName) is not installed")
             return false
         }
+        Self.preferred = self
         let config = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.open([repoURL], withApplicationAt: appURL, configuration: config) { _, error in
             if let error {

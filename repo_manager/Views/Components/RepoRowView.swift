@@ -45,10 +45,11 @@ struct RepoRowView: View {
         .cornerRadius(4)
         .opacity(vm.isOperating ? 0.8 : 1.0)
         .contentShape(Rectangle())
-        // Double-click anywhere on the row opens the repo in the first installed Git client.
+        // Double-click anywhere on the row opens the repo in the last-used Git client
+        // (falling back to the first installed one).
         .onTapGesture(count: 2) {
             guard repo.status != .loading else { return }
-            GitDesktopClient.installed.first?.open(repoURL: repo.url)
+            GitDesktopClient.default?.open(repoURL: repo.url)
         }
         .sheet(isPresented: $showNewBranchSheet) {
             NewBranchSheet(vm: vm)
