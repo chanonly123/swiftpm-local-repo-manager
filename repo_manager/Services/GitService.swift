@@ -53,13 +53,33 @@ actor GitService {
         return FileManager.default.fileExists(atPath: gitDir.path)
     }
 
-    // Get current branch name
+    // Get current branch name. `--show-current` prints nothing while HEAD is detached, which is
+    // always the case mid-rebase (rebase checks out the target commit directly) — so fall back to
+    // the branch name git itself stashed away for the rebase, read the same way git-prompt.sh does.
     nonisolated func getCurrentBranch(at repoURL: URL) async throws -> String {
         let output = try await runGitCommand(
             args: ["branch", "--show-current"],
             at: repoURL
         )
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branch = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !branch.isEmpty { return branch }
+        return rebaseHeadName(at: repoURL) ?? branch
+    }
+
+    // Reads the branch being rebased from .git/rebase-merge/head-name (interactive/merge rebase)
+    // or .git/rebase-apply/head-name (apply-based rebase, e.g. `git rebase` without --merge).
+    // Both store a full ref like "refs/heads/feature"; only branch refs are meaningful here.
+    private nonisolated func rebaseHeadName(at repoURL: URL) -> String? {
+        let gitDir = repoURL.appendingPathComponent(".git")
+        for component in ["rebase-merge/head-name", "rebase-apply/head-name"] {
+            let path = gitDir.appendingPathComponent(component)
+            guard let contents = try? String(contentsOf: path, encoding: .utf8) else { continue }
+            let ref = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+            if ref.hasPrefix("refs/heads/") {
+                return String(ref.dropFirst("refs/heads/".count))
+            }
+        }
+        return nil
     }
 
     // Get repository status

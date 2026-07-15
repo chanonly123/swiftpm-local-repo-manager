@@ -13,6 +13,7 @@ struct RepoRowView: View {
 
     @State private var showNewBranchSheet = false
     @State private var showDeleteBranchSheet = false
+    @State private var isHovering = false
 
     // Convenience — the live repo data.
     private var repo: GitRepo { vm.repo }
@@ -40,11 +41,13 @@ struct RepoRowView: View {
         .padding(.horizontal, 8)
         .background(
             vm.isOperating ? Color.orange.opacity(0.08) :
-                vm.isSelected ? Color.blue.opacity(0.08) : Color.clear
+                vm.isSelected ? Color.blue.opacity(0.08) :
+                isHovering ? Color.primary.opacity(0.05) : Color.clear
         )
         .cornerRadius(4)
         .opacity(vm.isOperating ? 0.8 : 1.0)
         .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
         // Double-click anywhere on the row opens the repo in the last-used Git client
         // (falling back to the first installed one).
         .onTapGesture(count: 2) {
