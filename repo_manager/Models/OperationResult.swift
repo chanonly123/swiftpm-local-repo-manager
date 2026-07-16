@@ -24,6 +24,7 @@ struct OperationResult: Identifiable {
         case deleteBranch = "Delete Branch"
         case merge = "Merge"
         case rebase = "Rebase"
+        case squash = "Squash"
         case continueOperation = "Continue"
         case abortOperation = "Abort"
     }

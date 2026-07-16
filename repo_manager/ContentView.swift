@@ -322,9 +322,18 @@ extension TabContentView {
             }
 
             Button(action: {
+                viewModel.recheckoutMode = .reset
                 viewModel.showingRecheckoutMenu = true
             }) {
                 Label("Recheckout", systemImage: "arrow.clockwise.circle")
+            }
+
+            Button(action: {
+                viewModel.recheckoutMode = .switchBranch
+                viewModel.switchBranchStashChanges = false
+                viewModel.showingRecheckoutMenu = true
+            }) {
+                Label("Switch Branch", systemImage: "arrow.branch")
             }
 
             Divider()
@@ -411,7 +420,7 @@ extension TabContentView {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("Recheckout")
+                Text(viewModel.recheckoutMode == .reset ? "Recheckout" : "Switch Branch")
                     .font(.headline)
                 Spacer()
                 Button(action: {
@@ -430,30 +439,44 @@ extension TabContentView {
             Divider()
 
             VStack(spacing: 16) {
-                Text("Reset branch to origin (stash, fetch, checkout -B, restore stash)")
+                Text(viewModel.recheckoutMode == .reset
+                     ? "Reset branch to origin (stash, fetch, checkout -B, restore stash)"
+                     : "Switch to a branch (git checkout, no reset)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.top)
 
-                // Current branch option
-                Button(action: {
-                    viewModel.showingRecheckoutMenu = false
-                    Task {
-                        await viewModel.recheckoutCurrentBranch()
+                // Uncommitted-change handling (only meaningful for the plain switch flow)
+                if viewModel.recheckoutMode == .switchBranch {
+                    Picker("", selection: $viewModel.switchBranchStashChanges) {
+                        Text("Bring changes along").tag(false)
+                        Text("Stash changes first").tag(true)
                     }
-                }) {
-                    Label("Current Branch", systemImage: "arrow.branch")
-                        .frame(maxWidth: .infinity)
+                    .pickerStyle(.radioGroup)
+                    .labelsHidden()
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+
+                // Current branch option (only meaningful for the reset flow)
+                if viewModel.recheckoutMode == .reset {
+                    Button(action: {
+                        viewModel.showingRecheckoutMenu = false
+                        Task {
+                            await viewModel.recheckoutCurrentBranch()
+                        }
+                    }) {
+                        Label("Current Branch", systemImage: "arrow.branch")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                }
 
                 // Develop branch option
                 Button(action: {
                     viewModel.showingRecheckoutMenu = false
                     Task {
-                        await viewModel.recheckoutToCustomBranch("main")
+                        await performRecheckoutAction(branch: "main")
                     }
                 }) {
                     Label("main", systemImage: "arrow.triangle.branch")
@@ -542,7 +565,17 @@ extension TabContentView {
         guard !branchName.isEmpty else { return }
         viewModel.showingRecheckoutMenu = false
         viewModel.customBranchInput = ""
-        Task { await viewModel.recheckoutToCustomBranch(branchName) }
+        Task { await performRecheckoutAction(branch: branchName) }
+    }
+
+    // Dispatches to the reset or plain-switch flow depending on which mode the popup is in.
+    private func performRecheckoutAction(branch: String) async {
+        switch viewModel.recheckoutMode {
+        case .reset:
+            await viewModel.recheckoutToCustomBranch(branch)
+        case .switchBranch:
+            await viewModel.switchBranchSelected(to: branch, stashChanges: viewModel.switchBranchStashChanges)
+        }
     }
 }
 

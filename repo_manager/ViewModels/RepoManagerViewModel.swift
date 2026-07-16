@@ -2,6 +2,12 @@ import Foundation
 import SwiftUI
 import Combine
 
+// Which action the recheckout popup performs: a full reset to origin, or a plain branch switch.
+enum RecheckoutMode {
+    case reset
+    case switchBranch
+}
+
 @MainActor
 class RepoManagerViewModel: ObservableObject {
     // One RepoViewModel per discovered repo — each is the single source of truth for its repo
@@ -20,6 +26,9 @@ class RepoManagerViewModel: ObservableObject {
     @Published var operationResults: [OperationResult] = []
     @Published var maxConcurrentOperations = 4
     @Published var showingRecheckoutMenu = false
+    @Published var recheckoutMode: RecheckoutMode = .reset
+    // Switch-branch mode only: whether to stash uncommitted changes first, or bring them along.
+    @Published var switchBranchStashChanges = false
     @Published var customBranchInput = ""
     // Union of branches across the selected repos, shown in the recheckout popup
     @Published var recheckoutBranches: [String] = []
@@ -423,6 +432,11 @@ class RepoManagerViewModel: ObservableObject {
     // Recheckout selected repositories to custom branch
     func recheckoutToCustomBranch(_ branchName: String) async {
         await performBatch("recheckout \(branchName)", on: selectedRepositoryVMs) { await $0.recheckout(toBranch: branchName) }
+    }
+
+    // Switch selected repositories to a branch (plain checkout, no fetch/reset)
+    func switchBranchSelected(to branchName: String, stashChanges: Bool) async {
+        await performBatch("switch \(branchName)", on: selectedRepositoryVMs) { await $0.switchBranch(name: branchName, stashChanges: stashChanges) }
     }
 
     // Push selected repositories

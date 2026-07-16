@@ -239,6 +239,13 @@ final class RepoViewModel: ObservableObject, Identifiable {
         await perform(.deleteBranch) { try await self.gitService.deleteBranch(at: $0.url, name: name, deleteRemote: deleteRemote) }
     }
 
+    // Squash the most recent `count` commits (a contiguous run from HEAD) into one.
+    @discardableResult func squash(count: Int, message: String) async -> OperationResult {
+        let result = await perform(.squash) { try await self.gitService.squashCommits(at: $0.url, count: count, message: message) }
+        if result.success { needsForcePush = true }
+        return result
+    }
+
     // Continue / abort the in-progress operation recorded on the repo (nil if none).
     @discardableResult func continueInProgress() async -> OperationResult? {
         guard let operation = repo.inProgressOperation else { return nil }

@@ -13,6 +13,7 @@ struct RepoRowView: View {
 
     @State private var showNewBranchSheet = false
     @State private var showDeleteBranchSheet = false
+    @State private var showSquashSheet = false
     @State private var isHovering = false
 
     // Convenience — the live repo data.
@@ -33,7 +34,6 @@ struct RepoRowView: View {
             xcodeTasksMenu
             terminalButton
             pathButton
-            gitOperationsMenu
             diffHistoryButton
         }
         .textSelection(.enabled)
@@ -47,6 +47,7 @@ struct RepoRowView: View {
         .cornerRadius(4)
         .opacity(vm.isOperating ? 0.8 : 1.0)
         .contentShape(Rectangle())
+        .contextMenu { gitOperationsMenuItems }
         .onHover { isHovering = $0 }
         // Double-click anywhere on the row opens the repo in the last-used Git client
         // (falling back to the first installed one).
@@ -59,6 +60,9 @@ struct RepoRowView: View {
         }
         .sheet(isPresented: $showDeleteBranchSheet) {
             DeleteBranchSheet(vm: vm)
+        }
+        .sheet(isPresented: $showSquashSheet) {
+            SquashCommitsSheet(vm: vm)
         }
     }
 
@@ -160,7 +164,7 @@ struct RepoRowView: View {
             .padding(.vertical, 2)
             .background(Color.red.opacity(0.12))
             .clipShape(Capsule())
-            .help("\(operation.rawValue) in progress — use the git menu to continue or abort")
+            .help("\(operation.rawValue) in progress — right-click the row to continue or abort")
         }
     }
 
@@ -235,9 +239,11 @@ struct RepoRowView: View {
         }
     }
 
-    // Git operations menu (merge / rebase, plus continue / abort when mid-operation)
-    private var gitOperationsMenu: some View {
-        Menu {
+    // Git operations menu items (merge / rebase, plus continue / abort when mid-operation) —
+    // shown as a right-click context menu on the row rather than a dedicated toolbar button.
+    @ViewBuilder
+    private var gitOperationsMenuItems: some View {
+        Group {
             if let operation = repo.inProgressOperation {
                 Section("\(operation.rawValue) in progress") {
                     Button(action: { Task { await vm.continueInProgress() } }) {
@@ -253,19 +259,14 @@ struct RepoRowView: View {
                 Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
             }
             pushButton
+            Button(action: { showSquashSheet = true }) {
+                Label("Squash…", systemImage: "arrow.triangle.merge")
+            }
             Divider()
             Button(role: .destructive, action: { showDeleteBranchSheet = true }) {
                 Label("Delete Branch…", systemImage: "trash")
             }
-        } label: {
-            Image(systemName: "lines.measurement.vertical")
-                .font(.system(size: 14))
-                .foregroundStyle(repo.inProgressOperation != nil ? .red : .secondary)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help(repo.inProgressOperation != nil ? "\(repo.inProgressOperation!.rawValue) in progress — Git Operations" : "Git Operations (Branches)")
         .disabled(repo.status == .loading || vm.isOperating)
     }
 
