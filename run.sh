@@ -16,7 +16,7 @@ if [ "$CLEAN" = true ]; then
     echo "Cleaning..."
     xcodebuild -scheme repo_manager \
         -destination 'platform=macOS' \
-        -configuration Debug \
+        -configuration Release \
         -derivedDataPath ./DerivedData \
         clean
 fi
@@ -24,9 +24,9 @@ fi
 echo "Building repo_manager..."
 xcodebuild -scheme repo_manager \
     -destination 'platform=macOS' \
-    -configuration Debug \
+    -configuration Release \
     -derivedDataPath ./DerivedData \
     build
 
 echo "Launching app..."
-open ./DerivedData/Build/Products/Debug/repo_manager.app
+open ./DerivedData/Build/Products/Release/repo_manager.app
