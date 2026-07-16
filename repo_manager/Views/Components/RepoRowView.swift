@@ -14,6 +14,8 @@ struct RepoRowView: View {
     @State private var showNewBranchSheet = false
     @State private var showDeleteBranchSheet = false
     @State private var showSquashSheet = false
+    @State private var showForcePushConfirmation = false
+    @State private var showHardResetConfirmation = false
     @State private var isHovering = false
 
     // Convenience — the live repo data.
@@ -63,6 +65,22 @@ struct RepoRowView: View {
         }
         .sheet(isPresented: $showSquashSheet) {
             SquashCommitsSheet(vm: vm)
+        }
+        .alert("⚠️ Force Push Warning", isPresented: $showForcePushConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Force Push", role: .destructive) {
+                Task { await vm.forcePush() }
+            }
+        } message: {
+            Text("This will force-push (--force-with-lease) \(repo.currentBranch ?? "the current branch") to origin for \(repo.name).\n\nThis may overwrite remote history.")
+        }
+        .alert("⚠️ Hard Reset Warning", isPresented: $showHardResetConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Reset", role: .destructive) {
+                Task { await vm.hardReset() }
+            }
+        } message: {
+            Text("This will permanently discard ALL uncommitted changes and untracked files in \(repo.name).\n\nThis action CANNOT be undone.")
         }
     }
 
@@ -221,24 +239,6 @@ struct RepoRowView: View {
         .help("Open in Finder")
     }
 
-    // Push button — publishes an unpublished branch, otherwise pushes to origin.
-    @ViewBuilder
-    private var pushButton: some View {
-        if repo.currentBranch != nil {
-            Button(repo.hasRemoteBranch ? "Push" : "Publish") {
-                Task {
-                    if repo.hasRemoteBranch { await vm.push() } else { await vm.publish() }
-                }
-            }
-            .font(.system(size: 14))
-            .buttonStyle(.plain)
-            .help(repo.hasRemoteBranch
-                  ? "Push \(repo.currentBranch ?? "") to origin"
-                  : "Publish \(repo.currentBranch ?? "") to origin and set upstream")
-            .disabled(repo.status == .loading || vm.isOperating)
-        }
-    }
-
     // Git operations menu items (merge / rebase, plus continue / abort when mid-operation) —
     // shown as a right-click context menu on the row rather than a dedicated toolbar button.
     @ViewBuilder
@@ -255,10 +255,35 @@ struct RepoRowView: View {
                 }
                 Divider()
             }
+            Button(action: { Task { await vm.fetch() } }) {
+                Label("Fetch", systemImage: "arrow.down.circle")
+            }
+            Button(action: { Task { await vm.recheckout() } }) {
+                Label("Recheckout", systemImage: "arrow.clockwise.circle")
+            }
             Button(action: { showNewBranchSheet = true }) {
                 Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
             }
-            pushButton
+            Divider()
+            if repo.currentBranch != nil {
+                Button(action: {
+                    Task {
+                        if repo.hasRemoteBranch { await vm.push() } else { await vm.publish() }
+                    }
+                }) {
+                    Label(
+                        repo.hasRemoteBranch ? "Push" : "Publish",
+                        systemImage: repo.hasRemoteBranch ? "arrow.up.circle" : "icloud.and.arrow.up"
+                    )
+                }
+            }
+            Button(role: .destructive, action: { showForcePushConfirmation = true }) {
+                Label("Force Push", systemImage: "arrow.up.circle.fill")
+            }
+            Divider()
+            Button(role: .destructive, action: { showHardResetConfirmation = true }) {
+                Label("Reset", systemImage: "exclamationmark.triangle")
+            }
             Button(action: { showSquashSheet = true }) {
                 Label("Squash…", systemImage: "arrow.triangle.merge")
             }

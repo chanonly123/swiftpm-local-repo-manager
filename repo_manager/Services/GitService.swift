@@ -227,7 +227,10 @@ actor GitService {
             }
         }
         messages.append("Switching to \(name)...")
-        _ = try await runGitCommand(args: ["checkout", name], at: repoURL)
+        // -m: three-way merge of local changes into the target branch (instead of refusing
+        // when the touched files differ between branches) when they weren't stashed above.
+        let checkoutArgs = stashChanges ? ["checkout", name] : ["checkout", "-m", name]
+        _ = try await runGitCommand(args: checkoutArgs, at: repoURL)
         messages.append("✓ Switched to \(name)")
         return messages.joined(separator: "\n")
     }
