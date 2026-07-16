@@ -3,10 +3,10 @@ import SwiftUI
 import Combine
 
 // One RepoViewModel == one git repository, and it is the single source of truth for that
-// repo. The same reference is passed into every view that renders the repo (list row, its
-// branch/merge/rebase/delete sheets, and its diff window), so any change — a git op from the
-// row, a commit from the diff window, or a background FSEvents refresh — is observed
-// everywhere it's shown. No view keeps its own copy of the repo's data.
+// repo. The same reference is passed into every view that renders the repo (list row and its
+// branch/merge/rebase/delete/squash sheets), so any change — a git op from the row or a
+// background FSEvents refresh — is observed everywhere it's shown. No view keeps its own copy
+// of the repo's data.
 // The whole type is @MainActor so all observable state is read and mutated on the main actor —
 // this is what SwiftUI observation expects, so reassigning `repo` (a value type) reliably
 // invalidates every view that read it, with no manual change signal needed for in-list rows.
@@ -23,80 +23,20 @@ final class RepoViewModel: ObservableObject, Identifiable {
     // written — that concurrency was hanging batches. The coordinator reloads the operated
     // repos once, after the whole batch finishes.
     @Published var deferReload: Bool = false
-    // Set after a history-rewriting op (rebase/squash/reset) so the diff window offers Force
-    // Push as the primary action; cleared once a push/force-push lands. Session-only — not
-    // persisted, resets to false on relaunch.
+    // Set after a history-rewriting op (rebase/squash/reset) so the row can offer Force Push;
+    // cleared once a push/force-push lands. Session-only — not persisted, resets on relaunch.
     @Published var needsForcePush: Bool = false
-    // Operation failures for this repo, shown in the top-right banner stack (row + diff
-    // window). Never auto-cleared — the user dismisses each banner explicitly.
+    // Operation failures for this repo, shown in the top-right banner stack.
+    // Never auto-cleared — the user dismisses each banner explicitly.
     @Published var banners: [BannerItem] = []
-    // Diff-window changed-files selection, kept on the VM so it survives closing/reopening the
-    // window (session-only). `knownFilePaths` remembers every path we've seen so a reopen
-    // restores the saved checkbox state instead of re-checking everything.
-    @Published var checkedPaths: Set<String> = []
-    @Published var knownFilePaths: Set<String> = []
-    // Bumps on every refresh / operation. The detached diff window watches this via
-    // `.onChange` to reload its content — GitRepo's Equatable only compares url, so
-    // `.onChange(of: repo)` wouldn't fire on a status/branch change. In-list rows don't need
-    // it; they observe `repo` directly now that the type is uniformly @MainActor.
-    @Published private(set) var changeToken: Int = 0
-
-    // MARK: - Diff window state
-    //
-    // The diff/history window renders no repo data of its own — everything below lives here so
-    // it survives closing/reopening the window and stays in lockstep with the shared repo. The
-    // loading/action logic that fills these lives in RepoViewModel+DiffWindow.swift.
-
-    // Changed files and the selected file's diff.
-    @Published var files: [FileEntry] = []
-    @Published var selectedPath: String?
-    @Published var diffLines: [DiffLine] = []
-    @Published var loadingFiles = true
-    @Published var loadingDiff = false
-    @Published var tooLarge = false
-
-    // Commit composer state.
-    @Published var commitMessage = ""
-    @Published var isCommitting = false
-    @Published var commitError: String?
-    @Published var gitIdentity: (name: String, email: String) = ("", "")
-    // Conflicted files that still contain leftover conflict markers (unresolved). Refreshed by
-    // loadFiles(); once empty, the conflict warning gives way to the commit UI.
-    @Published var unresolvedConflicts: Set<String> = []
-
-    // Commit history (paged) and its selection.
-    @Published var commits: [CommitEntry] = []
-    @Published var selectedCommits: Set<String> = []
-    @Published var loadingCommits = true
-    @Published var loadingMoreCommits = false
-    @Published var hasMoreCommits = true
-
-    // Files changed in the currently-selected commit/stash, and which one's diff is shown.
-    // GitHub-Desktop style: the history diff panel lists these files, then shows the selected
-    // file's diff in `diffLines`.
-    @Published var commitFiles: [FileEntry] = []
-    @Published var selectedCommitFile: String?
-    @Published var loadingCommitFiles = false
-    // The (revision + file) currently loaded into diffLines. Auto-selecting the first file loads
-    // it directly; this lets the selection's onChange skip re-loading that same file.
-    var loadedRevisionFileKey: String?
-
-    // History tab + stashes and their selection.
-    @Published var historyTab: HistoryTab = .commits
-    @Published var stashes: [StashEntry] = []
-    @Published var selectedStash: Set<String> = []
-    @Published var loadingStashes = true
-
-    let diffSizeLimit = 1_000_000
-    let commitPageSize = 10
 
     // Stable across the object's life (derived from the repo path, which never changes here).
     let id: UUID
 
-    // This repo's single git actor. Every git command for this repo — row operations, the diff
-    // window's loads/commits, the branch sheets' listings — goes through this one instance, so
-    // they all run serially (see GitService's SerialGate). Exposed (not private) so the diff
-    // window and sheets share it instead of spinning up their own unserialized GitService.
+    // This repo's single git actor. Every git command for this repo — row operations, the
+    // branch/squash sheets' listings — goes through this one instance, so they all run serially
+    // (see GitService's SerialGate). Exposed (not private) so sheets share it instead of
+    // spinning up their own unserialized GitService.
     let gitService = GitService()
 
     init(repo: GitRepo) {
@@ -116,8 +56,7 @@ final class RepoViewModel: ObservableObject, Identifiable {
     func reload() async {
         let old = repo.status.displayText
         repo = await gitService.getRepoInfo(at: repo.url)
-        changeToken &+= 1
-        debugLog("[DEBUG] refresh \(repo.name): \(old) -> \(repo.status.displayText) branch=\(repo.currentBranch ?? "nil") token=\(changeToken)")
+        debugLog("[DEBUG] refresh \(repo.name): \(old) -> \(repo.status.displayText) branch=\(repo.currentBranch ?? "nil")")
     }
 
     // MARK: - Banners
