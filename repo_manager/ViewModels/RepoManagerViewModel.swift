@@ -564,6 +564,12 @@ class RepoManagerViewModel: ObservableObject {
         debugLog("[DEBUG] Adding local dependencies to \(project.name)")
 
         do {
+            // Clear any existing marker-tracked entries first so re-adding never duplicates them.
+            let removed = try await repoService.removeLocalDependencies(project: project)
+            if removed > 0 {
+                debugLog("[DEBUG] Removed \(removed) existing local dependency reference(s) from \(project.name) before re-adding")
+            }
+
             let result = try await repoService.addLocalDependencies(
                 project: project,
                 baseDirectory: directory,
