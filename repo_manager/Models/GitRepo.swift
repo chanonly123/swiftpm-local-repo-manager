@@ -26,7 +26,7 @@ struct GitRepo: Identifiable, Hashable {
     // A git operation that is paused mid-flight (typically waiting on conflict
     // resolution). The raw value is the human-facing label; `gitCommand` is the
     // subcommand used to --continue / --abort it.
-    enum InProgressOperation: String, Equatable {
+    enum InProgressOperation: String, Hashable {
         case merge = "Merging"
         case rebase = "Rebasing"
         case cherryPick = "Cherry-picking"
@@ -44,7 +44,7 @@ struct GitRepo: Identifiable, Hashable {
         }
     }
 
-    enum RepoStatus: Equatable {
+    enum RepoStatus: Equatable, Hashable {
         case clean
         case uncommittedChanges
         case error(String)
@@ -69,13 +69,11 @@ struct GitRepo: Identifiable, Hashable {
         }
     }
 
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(url)
-    }
-
-    static func == (lhs: GitRepo, rhs: GitRepo) -> Bool {
-        lhs.url == rhs.url
-    }
+    // Equatable/Hashable are compiler-synthesized from all stored properties above (not `id`,
+    // which is computed) — so any field change, not just `url`/`status`, counts as "different".
+    // That matters wherever code compares GitRepo values directly (Set/Dictionary keys, `.task(id:)`,
+    // `onChange(of:)`); relying on a hand-picked subset previously let branch/ahead-behind/conflict
+    // changes look identical to such call sites.
 
     // Deterministic UUID from the repo path (MD5 conveniently yields 16 bytes).
     private static func stableID(for url: URL) -> UUID {

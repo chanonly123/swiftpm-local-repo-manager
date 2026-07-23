@@ -90,7 +90,6 @@ enum GitDesktopClient: String, CaseIterable, Identifiable {
                 result = URL(fileURLWithPath: firstPath)
             }
         } catch {
-            debugLog("[ERROR] mdfind lookup failed for \(bundleIdentifier): \(error)")
         }
 
         spotlightCache[bundleIdentifier] = result
@@ -127,18 +126,11 @@ enum GitDesktopClient: String, CaseIterable, Identifiable {
     @discardableResult
     func open(repoURL: URL) -> Bool {
         guard let appURL = applicationURL else {
-            debugLog("[ERROR] \(displayName) is not installed")
             return false
         }
         Self.preferred = self
         let config = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.open([repoURL], withApplicationAt: appURL, configuration: config) { _, error in
-            if let error {
-                debugLog("[ERROR] Failed to open \(self.displayName): \(error)")
-            } else {
-                debugLog("[SUCCESS] Opened \(repoURL.path) in \(self.displayName)")
-            }
-        }
+        NSWorkspace.shared.open([repoURL], withApplicationAt: appURL, configuration: config)
         return true
     }
 }

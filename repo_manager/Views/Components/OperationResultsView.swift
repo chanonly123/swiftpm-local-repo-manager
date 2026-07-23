@@ -31,7 +31,7 @@ struct OperationResultsView: View {
                 errorList
             }
         }
-        .textSelection(.enabled)
+        .textSelection(.disabled)
         .frame(width: 400, height: 500)
     }
 

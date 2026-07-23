@@ -9,7 +9,7 @@ struct ContentView: View {
             Divider()
             tabContent
         }
-        .textSelection(.enabled)
+        .textSelection(.disabled)
         .frame(minWidth: 800, minHeight: 600)
         .navigationTitle("Repo Manager \(tabsManager.getCurrentVersion().map { "(\($0))" } ?? "")")
         .onAppear {

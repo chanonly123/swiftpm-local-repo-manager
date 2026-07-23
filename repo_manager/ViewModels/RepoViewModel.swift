@@ -54,9 +54,7 @@ final class RepoViewModel: ObservableObject, Identifiable {
     }
 
     func reload() async {
-        let old = repo.status.displayText
         repo = await gitService.getRepoInfo(at: repo.url)
-        debugLog("[DEBUG] refresh \(repo.name): \(old) -> \(repo.status.displayText) branch=\(repo.currentBranch ?? "nil")")
     }
 
     // MARK: - Banners
@@ -81,9 +79,7 @@ final class RepoViewModel: ObservableObject, Identifiable {
         let snapshot = repo
         let result: OperationResult
         do {
-            debugLog("[DEBUG] Starting \(operation.rawValue) on: \(snapshot.name)")
             let output = try await action(snapshot)
-            debugLog("[SUCCESS] \(operation.rawValue) completed for: \(snapshot.name)")
             result = OperationResult(
                 repoName: "\(snapshot.name) (\(snapshot.url.path))",
                 operation: operation,
@@ -92,7 +88,6 @@ final class RepoViewModel: ObservableObject, Identifiable {
                 timestamp: Date()
             )
         } catch {
-            debugLog("[ERROR] \(operation.rawValue) failed for: \(snapshot.name): \(error.localizedDescription)")
             banners.append(BannerItem(message: "\(operation.rawValue) failed: \(error.localizedDescription)", repoName: snapshot.name))
             result = OperationResult(
                 repoName: "\(snapshot.name) (\(snapshot.url.path))",
@@ -216,5 +211,42 @@ final class RepoViewModel: ObservableObject, Identifiable {
     @discardableResult func abortInProgress() async -> OperationResult? {
         guard let operation = repo.inProgressOperation else { return nil }
         return await perform(.abortOperation) { try await self.gitService.abortInProgress(at: $0.url, operation: operation) }
+    }
+
+    // MARK: - Create Diff
+
+    // Generates a diff file into ~/Downloads. Read-only (no repo mutation), so unlike the
+    // operations above this doesn't go through `perform` / trigger a reload — same reasoning
+    // as the plain listing calls (getCommitHistory) used by the squash/recheckout sheets.
+    private func createDiffFile(suggestedName: String, _ diff: (GitRepo) async throws -> String) async -> URL? {
+        do {
+            let content = try await diff(repo)
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                addBanner("Nothing to diff")
+                return nil
+            }
+            return try DiffFileWriter.write(content, suggestedName: suggestedName)
+        } catch {
+            addBanner("Create Diff failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    @discardableResult func createDiffFile(oldestCommit: CommitEntry, newestCommit: CommitEntry) async -> URL? {
+        await createDiffFile(suggestedName: "\(repo.name)-diff-commits-\(newestCommit.shortHash)-\(oldestCommit.shortHash)") {
+            try await self.gitService.diffForCommits(at: $0.url, oldestHash: oldestCommit.id, newestHash: newestCommit.id)
+        }
+    }
+
+    @discardableResult func createDiffFile(stash: StashEntry) async -> URL? {
+        await createDiffFile(suggestedName: "\(repo.name)-diff-stash-\(stash.id)") {
+            try await self.gitService.diffForStash(at: $0.url, index: stash.id)
+        }
+    }
+
+    @discardableResult func createDiffFileForCurrentChanges(paths: [String]) async -> URL? {
+        await createDiffFile(suggestedName: "\(repo.name)-diff-changes") {
+            try await self.gitService.diffForCurrentChanges(at: $0.url, paths: paths)
+        }
     }
 }

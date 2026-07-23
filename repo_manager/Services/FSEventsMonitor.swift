@@ -32,8 +32,6 @@ class FSEventsMonitor {
         // Create set of paths for quick lookup
         let monitoredPaths = Set(repoURLs.map { $0.path })
 
-        debugLog("[DEBUG] Starting monitoring for \(repoURLs.count) repositories")
-
         // Create event stream for all repository paths with 1s latency to coalesce rapid changes
         let eventStream = FolderContentMonitor.makeStream(
             paths: Array(monitoredPaths),
@@ -66,10 +64,7 @@ class FSEventsMonitor {
                     }
                 }
             }
-            debugLog("[DEBUG] Monitoring task completed")
         }
-
-        debugLog("[DEBUG] Started monitoring \(repoURLs.count) repositories")
     }
 
     /// Cancel any pending debounce for this URL and schedule a fresh one.
@@ -95,12 +90,10 @@ class FSEventsMonitor {
 
     func pause() {
         isPaused = true
-        debugLog("[DEBUG] FSEvents monitoring paused (app inactive)")
     }
 
     func resume() {
         isPaused = false
-        debugLog("[DEBUG] FSEvents monitoring resumed (app active)")
     }
 
     /// Suspend event delivery while git operations run. Independent of `pause()`, so the app /
@@ -112,14 +105,12 @@ class FSEventsMonitor {
         isSuspendedForOperation = true
         debounceTasks.values.forEach { $0.cancel() }
         debounceTasks.removeAll()
-        debugLog("[DEBUG] FSEvents monitoring suspended (operation in progress)")
     }
 
     /// Re-enable delivery after operations finish. Delivery only actually resumes if the monitor
     /// isn't also paused for app/tab focus.
     func resumeAfterOperation() {
         isSuspendedForOperation = false
-        debugLog("[DEBUG] FSEvents monitoring resumed (operations finished)")
     }
 
     /// Stop monitoring all repositories and cancel any pending debounce tasks
@@ -130,7 +121,6 @@ class FSEventsMonitor {
             self?.debounceTasks.values.forEach { $0.cancel() }
             self?.debounceTasks.removeAll()
         }
-        debugLog("[DEBUG] Stopped monitoring repositories")
     }
 
     deinit {

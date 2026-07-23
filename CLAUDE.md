@@ -34,5 +34,5 @@ Layout: `Models/`, `ViewModels/`, `Views/` (+ `Views/Components/`, `Views/Screen
 - **Persistence**: `TabsManager` saves `[WorkspaceTab]` to `UserDefaults`; restore via security-scoped bookmarks (`.withSecurityScope`, `startAccessingSecurityScopedResource()` / stop in `deinit`).
 - **Entitlements**: `files.user-selected.read-write`, `network.client`. Directory selection via `NSOpenPanel`.
 - macOS-only — use platform APIs freely (`NSOpenPanel`, FSEvents, `Process`, `NSWorkspace`).
-- Preserve existing patterns; don't add abstractions without a clear need. Log git steps with `[DEBUG]`/`[SUCCESS]`/`[ERROR]` prefixes.
+- Preserve existing patterns; don't add abstractions without a clear need. Logging (`debugLog`) lives only in `GitService`; prefix messages with the type name (`[GitService]`), never a level like `debug`/`info`.
 - No test cases required.

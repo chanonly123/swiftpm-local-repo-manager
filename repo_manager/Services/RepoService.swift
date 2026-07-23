@@ -92,7 +92,6 @@ actor RepoService {
                     successCount += 1
                 } catch {
                     // Other errors are actual failures
-                    debugLog("[ERROR] Failed to add \(repo.name): \(error)")
                 }
             }
         }

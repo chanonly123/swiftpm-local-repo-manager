@@ -157,7 +157,6 @@ class RepoManagerViewModel: ObservableObject {
 
     func refreshAllRepositoryStatuses() async {
         guard !repoViewModels.isEmpty, !isScanning, !isPerformingOperation else { return }
-        debugLog("[DEBUG] Refreshing all repository statuses")
         // Each VM refreshes itself silently; any open diff window shares the same VM and
         // observes the change, so no notification bridge is needed.
         await withTaskGroup(of: Void.self) { group in
@@ -176,21 +175,13 @@ class RepoManagerViewModel: ObservableObject {
                              relativeTo: nil,
                              bookmarkDataIsStale: &isStale)
 
-            if isStale {
-                debugLog("[DEBUG] Bookmark is stale, will need to re-select directory")
-            }
-
             // Start accessing the security-scoped resource
             if url.startAccessingSecurityScopedResource() {
                 currentDirectory = url
                 scopedResourceURL = url
-                debugLog("[DEBUG] Loaded directory from bookmark: \(url.path)")
                 await scanRepositories()
-            } else {
-                debugLog("[ERROR] Failed to access security-scoped resource")
             }
         } catch {
-            debugLog("[ERROR] Failed to resolve bookmark: \(error.localizedDescription)")
         }
     }
 
@@ -204,7 +195,6 @@ class RepoManagerViewModel: ObservableObject {
                                                    relativeTo: nil)
             return bookmarkData
         } catch {
-            debugLog("[ERROR] Failed to create bookmark: \(error.localizedDescription)")
             return nil
         }
     }
@@ -219,9 +209,7 @@ class RepoManagerViewModel: ObservableObject {
         if url.startAccessingSecurityScopedResource() {
             currentDirectory = url
             scopedResourceURL = url
-            debugLog("[DEBUG] Set directory: \(url.path)")
         } else {
-            debugLog("[ERROR] Failed to access security-scoped resource for: \(url.path)")
             currentDirectory = url
         }
     }
@@ -243,7 +231,6 @@ class RepoManagerViewModel: ObservableObject {
 
             if let validate = validate, !validate(url) { return }
 
-            debugLog("[DEBUG] User selected directory: \(url.path)")
             self.setDirectory(url)
             onSelected?(url)
             Task {
@@ -260,11 +247,7 @@ class RepoManagerViewModel: ObservableObject {
 
     // Scan for repositories in the current directory
     func scanRepositories() async {
-        // TEMP DIAGNOSTIC: capture who is triggering a scan.
-        debugLog("[TRACE] scanRepositories from:\n" + Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: "\n"))
         guard let directory = currentDirectory, !isScanning else { return }
-
-        debugLog("[DEBUG] scanRepositories directory: \(directory.path)")
 
         // Stop monitoring previous repositories
         fsEventsMonitor.stopMonitoring()
@@ -279,12 +262,10 @@ class RepoManagerViewModel: ObservableObject {
         do {
             // Scan for git repositories
             let repoURLs = try await gitService.scanForRepositories(at: directory)
-            debugLog("[DEBUG] scanRepositories Found \(repoURLs.count) git repositories")
 
             // Scan for Xcode projects
             let projects = try await repoService.findXcodeProjects(in: directory)
             xcodeProjects = projects
-            debugLog("[DEBUG] scanRepositories Found \(projects.count) Xcode projects")
 
             // Build the list, reusing cached VMs so their data (and selection) persist across
             // scans. Genuinely new repos start in .loading until their first refresh lands.
@@ -324,14 +305,12 @@ class RepoManagerViewModel: ObservableObject {
                         group.addTask { await vm.reload() }
                     }
                 }
-                debugLog("[SUCCESS] Loaded repository information for \(self.repoViewModels.count) repos")
                 repoViewModels.forEach({ $0.isOperating = false })
                 // Catch-up re-render for the cold-launch race described above (no-op cost in the
                 // common case where rows already subscribed and updated themselves live).
                 self.repoViewModels = self.repoViewModels.sorted { $0.repo.name < $1.repo.name }
             }
         } catch {
-            debugLog("[ERROR] Failed to scan directory: \(error.localizedDescription)")
             addBanner("Failed to scan directory: \(error.localizedDescription)")
         }
     }
@@ -354,7 +333,6 @@ class RepoManagerViewModel: ObservableObject {
         guard let vm = repoCache[repoURL] else { return }
         // refresh() no-ops while the repo has an operation in flight, which also prevents
         // FSEvents feedback loops from our own git commands.
-        debugLog("[DEBUG] File system change detected in: \(vm.repo.name)")
         await vm.refresh()
     }
 
@@ -481,7 +459,6 @@ class RepoManagerViewModel: ObservableObject {
         _ run: @escaping (RepoViewModel) async -> OperationResult
     ) async {
         guard !vms.isEmpty else { return }
-        debugLog("[BATCH] Starting \(label) on \(vms.count) repo(s), maxConcurrent=\(maxConcurrentOperations)")
 
         isStopping = false
         isPerformingOperation = true
@@ -540,8 +517,6 @@ class RepoManagerViewModel: ObservableObject {
 
         isPerformingOperation = false
         currentOperationLabel = ""
-        let failures = operationResults.filter { !$0.success }.count
-        debugLog("[BATCH] Finished \(label): \(operationResults.count - failures) succeeded, \(failures) failed\(isStopping ? " (stopped early)" : "")")
         // Per-repo failures already surface as banners (via each VM's perform()); no results sheet.
         isStopping = false
 
@@ -558,7 +533,6 @@ class RepoManagerViewModel: ObservableObject {
     // Stop the current batch operation (lets running tasks finish, skips queued ones)
     func stopCurrentOperation() {
         guard isPerformingOperation else { return }
-        debugLog("[BATCH] Stop requested by user — cancelling in-flight operations")
         isStopping = true
         operationTask?.cancel()
     }
@@ -573,26 +547,19 @@ class RepoManagerViewModel: ObservableObject {
         }
 
         isPerformingOperation = true
-        debugLog("[DEBUG] Adding local dependencies to \(project.name)")
 
         do {
             // Clear any existing marker-tracked entries first so re-adding never duplicates them.
-            let removed = try await repoService.removeLocalDependencies(project: project)
-            if removed > 0 {
-                debugLog("[DEBUG] Removed \(removed) existing local dependency reference(s) from \(project.name) before re-adding")
-            }
+            _ = try await repoService.removeLocalDependencies(project: project)
 
-            let result = try await repoService.addLocalDependencies(
+            _ = try await repoService.addLocalDependencies(
                 project: project,
                 baseDirectory: directory,
                 repositories: repositories
             )
 
-            debugLog("[SUCCESS] Added \(result.success)/\(result.total) module references to \(project.name)")
-
             operationResults = []
         } catch {
-            debugLog("[ERROR] Failed to add local dependencies: \(error.localizedDescription)")
             addBanner("Failed to add dependencies: \(error.localizedDescription)")
         }
 
@@ -602,12 +569,9 @@ class RepoManagerViewModel: ObservableObject {
     // Remove local dependencies from xcode project
     func removeLocalDependencies(from project: XcodeProject) async {
         isPerformingOperation = true
-        debugLog("[DEBUG] Removing local dependencies from \(project.name)")
         do {
-            let count = try await repoService.removeLocalDependencies(project: project)
-            debugLog("[SUCCESS] Removed \(count) local dependency references from \(project.name)")
+            _ = try await repoService.removeLocalDependencies(project: project)
         } catch {
-            debugLog("[ERROR] Failed to remove local dependencies: \(error.localizedDescription)")
             addBanner("Failed to remove dependencies: \(error.localizedDescription)")
         }
         isPerformingOperation = false
@@ -616,17 +580,12 @@ class RepoManagerViewModel: ObservableObject {
     // Toggle run scripts in a project
     func toggleRunScripts(for project: XcodeProject) async {
         isPerformingOperation = true
-        debugLog("[DEBUG] Toggling run scripts in \(project.name)")
 
         do {
-            let result = try await repoService.toggleRunScripts(project: project)
-
-            let status = result.enabled ? "Enabled" : "Disabled"
-            debugLog("[SUCCESS] \(status) \(result.count) run script(s)")
+            _ = try await repoService.toggleRunScripts(project: project)
 
             operationResults = []
         } catch {
-            debugLog("[ERROR] Failed to toggle run scripts: \(error.localizedDescription)")
             addBanner("Failed to toggle run scripts: \(error.localizedDescription)")
         }
 

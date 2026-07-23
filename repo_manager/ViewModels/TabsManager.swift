@@ -37,8 +37,6 @@ class TabsManager: ObservableObject {
 
     // Selecting a tab makes it the only one monitoring the filesystem (FSEvents).
     func selectTab(_ id: UUID) {
-        // TEMP DIAGNOSTIC: capture who is triggering tab selection (sync stack = real caller).
-        debugLog("[TRACE] selectTab(\(id)) from:\n" + Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: "\n"))
         for (tabID, vm) in viewModels where tabID != id { vm.deactivate() }
         selectedTabID = id
         viewModels[id]?.activate()
@@ -126,7 +124,6 @@ class TabsManager: ObservableObject {
             guard let newVer = versionToInt(tagName),
                   let currentVer = versionToInt(current),
                   newVer > currentVer else { return }
-            debugLog("[UPDATE] New version available: \(tagName) (current \(current))")
             newVersion = tagName
             newVersionDesc = release.body
             newVersionAlert = true
@@ -136,23 +133,16 @@ class TabsManager: ObservableObject {
     // MARK: - Persistence
 
     private func loadTabs() {
-        debugLog("[DEBUG] Loading tabs from UserDefaults...")
-
         if let data = userDefaults.data(forKey: tabsKey),
            let decodedTabs = try? JSONDecoder().decode([WorkspaceTab].self, from: data),
            !decodedTabs.isEmpty {
             tabs = decodedTabs
-            debugLog("[DEBUG] Loaded \(tabs.count) tabs from UserDefaults")
-            for tab in tabs {
-                debugLog("[DEBUG]   - Tab: \(tab.name), Directory: \(tab.directoryPath ?? "none"), Has Bookmark: \(tab.bookmarkData != nil)")
-            }
 
             // Create ViewModels for each tab
             for tab in tabs {
                 let viewModel = RepoManagerViewModel()
                 // If tab has bookmark data, restore directory from it
                 if let bookmarkData = tab.bookmarkData {
-                    debugLog("[DEBUG] Restoring directory for tab: \(tab.name)")
                     Task { @MainActor in
                         await viewModel.loadDirectory(from: bookmarkData)
                     }
@@ -165,12 +155,10 @@ class TabsManager: ObservableObject {
                let selectedUUID = UUID(uuidString: selectedIDString),
                tabs.contains(where: { $0.id == selectedUUID }) {
                 selectedTabID = selectedUUID
-                debugLog("[DEBUG] Restored selected tab: \(selectedUUID)")
             } else {
                 selectedTabID = tabs.first?.id
             }
         } else {
-            debugLog("[DEBUG] No saved tabs found, creating initial tab")
             // Create initial tab
             let initialTab = WorkspaceTab(name: "Untitled")
             tabs = [initialTab]
@@ -186,14 +174,9 @@ class TabsManager: ObservableObject {
     private func saveTabs() {
         if let encoded = try? JSONEncoder().encode(tabs) {
             userDefaults.set(encoded, forKey: tabsKey)
-            debugLog("[DEBUG] Saved \(tabs.count) tabs to UserDefaults")
-            for tab in tabs {
-                debugLog("[DEBUG]   - Tab: \(tab.name), Directory: \(tab.directoryPath ?? "none"), Has Bookmark: \(tab.bookmarkData != nil)")
-            }
         }
         if let selectedID = selectedTabID {
             userDefaults.set(selectedID.uuidString, forKey: selectedTabKey)
-            debugLog("[DEBUG] Saved selected tab: \(selectedID)")
         }
     }
 }

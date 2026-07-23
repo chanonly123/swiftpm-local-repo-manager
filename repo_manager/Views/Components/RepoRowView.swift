@@ -17,6 +17,8 @@ struct RepoRowView: View {
     @State private var showForcePushConfirmation = false
     @State private var showHardResetConfirmation = false
     @State private var showRecheckoutSheet = false
+    @State private var showCreateDiffSheet = false
+    @State private var showApplyPatchPicker = false
     @State private var showApplyPatchConfirmation = false
     @State private var pendingPatchURL: URL?
     @State private var isHovering = false
@@ -39,9 +41,10 @@ struct RepoRowView: View {
             xcodeTasksMenu
             terminalButton
             pathButton
+            copyMenu
             diffHistoryButton
         }
-        .textSelection(.enabled)
+        .textSelection(.disabled)
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
         .background(
@@ -72,6 +75,9 @@ struct RepoRowView: View {
         .sheet(isPresented: $showRecheckoutSheet) {
             RecheckoutSheet(vm: vm)
         }
+        .sheet(isPresented: $showCreateDiffSheet) {
+            CreateDiffSheet(vm: vm)
+        }
         .alert("⚠️ Force Push Warning", isPresented: $showForcePushConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Force Push", role: .destructive) {
@@ -88,9 +94,20 @@ struct RepoRowView: View {
         } message: {
             Text("This will permanently discard ALL uncommitted changes and untracked files in \(repo.name).\n\nThis action CANNOT be undone.")
         }
+        .alert("Apply Diff/Patch", isPresented: $showApplyPatchPicker) {
+            ForEach(RecentPatchFileStore.recentPaths(for: repo.url), id: \.self) { path in
+                Button(URL(fileURLWithPath: path).lastPathComponent) {
+                    pendingPatchURL = URL(fileURLWithPath: path)
+                    showApplyPatchConfirmation = true
+                }
+            }
+            Button("Choose File…") { choosePatchFile() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Select a recent patch file for \(repo.name), or choose a new one.")
+        }
         .alert("Apply Diff/Patch", isPresented: $showApplyPatchConfirmation, presenting: pendingPatchURL) { patchURL in
             Button("Cancel", role: .cancel) { }
-            Button("Choose File…") { choosePatchFile() }
             Button("Apply") { applyPatch(patchURL) }
         } message: { patchURL in
             Text("Apply \(patchURL.lastPathComponent) to \(repo.name) using a 3-way merge (git apply --3way).\n\nConflicts, if any, are left as markers in the affected files — nothing is committed.")
@@ -252,6 +269,31 @@ struct RepoRowView: View {
         .help("Open in Finder")
     }
 
+    // Copy button — quick clipboard actions for common repo identifiers.
+    private var copyMenu: some View {
+        Menu {
+            Button(action: { copyToClipboard(repo.url.path) }) {
+                Label("Copy Directory Path", systemImage: "folder")
+            }
+            Button(action: { copyToClipboard(repo.name) }) {
+                Label("Copy Directory Name", systemImage: "textformat")
+            }
+            if let branch = repo.currentBranch {
+                Button(action: { copyToClipboard(branch) }) {
+                    Label("Copy Branch Name", systemImage: "arrow.branch")
+                }
+            }
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Copy")
+    }
+
     // Git operations menu items (merge / rebase, plus continue / abort when mid-operation) —
     // shown as a right-click context menu on the row rather than a dedicated toolbar button.
     @ViewBuilder
@@ -274,11 +316,16 @@ struct RepoRowView: View {
             Button(action: { showRecheckoutSheet = true }) {
                 Label("Recheckout", systemImage: "arrow.clockwise.circle")
             }
+            Divider()
             Button(action: { showNewBranchSheet = true }) {
                 Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
             }
+            Divider()
             Button(action: { startApplyPatch() }) {
                 Label("Apply Diff/Patch…", systemImage: "doc.badge.plus")
+            }
+            Button(action: { showCreateDiffSheet = true }) {
+                Label("Create Diff…", systemImage: "doc.text.magnifyingglass")
             }
             Divider()
             if repo.currentBranch != nil {
@@ -390,13 +437,12 @@ struct RepoRowView: View {
         }
     }
 
-    // Offer the repo's last-used patch file if we have one; otherwise go straight to the picker.
+    // Offer the repo's recent patch files if we have any; otherwise go straight to the picker.
     private func startApplyPatch() {
-        if let recent = RecentPatchFileStore.recent(for: repo.url) {
-            pendingPatchURL = recent
-            showApplyPatchConfirmation = true
-        } else {
+        if RecentPatchFileStore.recentPaths(for: repo.url).isEmpty {
             choosePatchFile()
+        } else {
+            showApplyPatchPicker = true
         }
     }
 
@@ -411,18 +457,23 @@ struct RepoRowView: View {
         }
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            RecentPatchFileStore.save(url, for: repo.url)
             pendingPatchURL = url
             showApplyPatchConfirmation = true
         }
     }
 
     private func applyPatch(_ patchURL: URL) {
+        RecentPatchFileStore.save(patchURL, for: repo.url)
         Task {
             let didAccess = patchURL.startAccessingSecurityScopedResource()
             defer { if didAccess { patchURL.stopAccessingSecurityScopedResource() } }
             await vm.applyPatch(patchURL: patchURL)
         }
+    }
+
+    private func copyToClipboard(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
     }
 
     private func openInTerminal(url: URL) {
@@ -436,9 +487,6 @@ struct RepoRowView: View {
         var error: NSDictionary?
         if let scriptObject = NSAppleScript(source: myAppleScript) {
             scriptObject.executeAndReturnError(&error)
-            if let error {
-                debugLog("[ERROR] Failed to open terminal: \(error)")
-            }
         }
     }
 }

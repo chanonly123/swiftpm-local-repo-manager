@@ -48,7 +48,7 @@ struct BannerStackView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                    .textSelection(.disabled)
             }
             Spacer(minLength: 4)
             Button(action: { onDismiss(banner.id) }) {

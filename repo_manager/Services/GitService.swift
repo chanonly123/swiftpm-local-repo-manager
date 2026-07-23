@@ -120,6 +120,62 @@ actor GitService {
         }
     }
 
+    // List stash entries, newest first (index 0 == stash@{0}).
+    nonisolated func getStashes(at repoURL: URL) async throws -> [StashEntry] {
+        let output = try await runGitCommand(
+            args: ["stash", "list", "--pretty=format:%gd%x1f%s"],
+            at: repoURL,
+            allowNonZeroExit: true
+        )
+        return output.components(separatedBy: .newlines).compactMap { line in
+            let parts = line.components(separatedBy: "\u{1f}")
+            guard parts.count == 2,
+                  let openBrace = parts[0].firstIndex(of: "{"),
+                  let closeBrace = parts[0].firstIndex(of: "}"),
+                  let index = Int(parts[0][parts[0].index(after: openBrace)..<closeBrace])
+            else { return nil }
+            return StashEntry(id: index, message: parts[1])
+        }
+    }
+
+    // Diff introduced by a contiguous run of commits, oldest..newest (oldest's parent to newest).
+    nonisolated func diffForCommits(at repoURL: URL, oldestHash: String, newestHash: String) async throws -> String {
+        try await runGitCommand(args: ["diff", "\(oldestHash)^..\(newestHash)"], at: repoURL)
+    }
+
+    // Diff for a single stash entry, including any untracked files it captured.
+    nonisolated func diffForStash(at repoURL: URL, index: Int) async throws -> String {
+        try await runGitCommand(args: ["stash", "show", "-p", "-u", "stash@{\(index)}"], at: repoURL)
+    }
+
+    // Diff for current uncommitted changes (staged + unstaged tracked files) against HEAD,
+    // restricted to `paths` (repo-relative).
+    nonisolated func diffForCurrentChanges(at repoURL: URL, paths: [String]) async throws -> String {
+        try await runGitCommand(args: ["diff", "HEAD", "--"] + paths, at: repoURL)
+    }
+
+    // List tracked files with uncommitted changes (staged and/or unstaged), for the Create Diff
+    // "Current Changes" picker. Untracked files ("??") are excluded — `git diff HEAD` never
+    // shows them, so they can't be included in the resulting patch anyway.
+    nonisolated func getChangedFiles(at repoURL: URL) async throws -> [ChangedFileEntry] {
+        let output = try await runGitCommand(
+            args: ["status", "--porcelain"],
+            at: repoURL,
+            noOptionalLocks: true
+        )
+        return output.components(separatedBy: .newlines).compactMap { line in
+            guard line.count > 3 else { return nil }
+            let status = String(line.prefix(2))
+            guard status != "??" else { return nil }
+            var path = String(line.dropFirst(3))
+            // Renames render as "old -> new"; the new path is what `git diff` expects.
+            if let arrowRange = path.range(of: " -> ") {
+                path = String(path[arrowRange.upperBound...])
+            }
+            return ChangedFileEntry(path: path, statusCode: status)
+        }
+    }
+
     // List local branch names
     // Local branches plus remote-only branches, by short name (deduped, locals first).
     // Remote refs (e.g. "origin/feature") are reduced to their branch name so checking
@@ -454,7 +510,7 @@ actor GitService {
             if (try? await runGitCommand(
                 args: ["rev-parse", "--verify", "--quiet", candidate],
                 at: repoURL,
-                logErrors: false
+                logErrors: false // candidates are expected to miss; not a real failure
             )) != nil {
                 remoteRef = candidate
                 // origin/HEAD is only the fork-point fallback — matching it does not mean
@@ -485,31 +541,36 @@ actor GitService {
     // rerun, and re-issuing a mutating command that actually failed could do harm.
     private nonisolated func runGitCommand(args: [String], at repoURL: URL, logErrors: Bool = true, allowNonZeroExit: Bool = false, environment: [String: String]? = nil, noOptionalLocks: Bool = false, timeout: TimeInterval = 5, retries: Int = 2) async throws -> String {
         let repoName = repoURL.lastPathComponent
-
-        // Serialize: wait until any in-flight command on this service finishes before starting.
-        // Released in the defer, whether the command succeeds, fails, or is cancelled (Stop).
-        await gate.acquire()
-        defer { gate.release() }
         // --no-optional-locks stops read-only commands (status/diff) from taking index.lock
         // for their opportunistic index refresh, so they can never contend with a concurrent
         // write on the same repo (e.g. an FSEvents-triggered status during a commit/rebase).
         let fullArgs = noOptionalLocks ? ["--no-optional-locks"] + args : args
         let command = "git \(fullArgs.joined(separator: " "))"
 
+        // Serialize: wait until any in-flight command on this service finishes before starting.
+        // Released in the defer, whether the command succeeds, fails, or is cancelled (Stop).
+        await gate.acquire()
+        defer { gate.release() }
+
         var lastError: Error = GitServiceError.commandFailed("Unknown error")
         for attempt in 0...max(0, retries) {
             if attempt > 0 {
-                debugLog("[RETRY] \(repoName) attempt \(attempt + 1) of \(retries + 1): \(command)")
+                debugLog("[GitService] \(repoName) retry \(attempt + 1)/\(retries + 1): \(command)")
             }
             do {
-                return try await runGitProcess(
-                    fullArgs: fullArgs, command: command, repoName: repoName,
+                let result = try await runGitProcess(
+                    fullArgs: fullArgs, command: command,
                     at: repoURL, environment: environment,
-                    allowNonZeroExit: allowNonZeroExit, logErrors: logErrors,
+                    allowNonZeroExit: allowNonZeroExit,
                     timeout: timeout
                 )
+                debugLog("[GitService] \(repoName) ran: \(command)")
+                return result
             } catch let error as GitServiceError {
                 lastError = error
+                if logErrors {
+                    debugLog("[GitService] \(repoName) failed: \(command) — \(error.localizedDescription)")
+                }
                 if case .timedOut = error, attempt < retries, !Task.isCancelled { continue }
                 throw error
             }
@@ -526,7 +587,7 @@ actor GitService {
     // SIGTERM reliably unblocks a `readToEnd()` that a surviving child still holds open, so any
     // design that awaited the read could hang forever. Here the reader thread may leak for a hung
     // command, but the app always makes progress. git is force-killed (SIGTERM then SIGKILL).
-    private nonisolated func runGitProcess(fullArgs: [String], command: String, repoName: String, at repoURL: URL, environment: [String: String]?, allowNonZeroExit: Bool, logErrors: Bool, timeout: TimeInterval) async throws -> String {
+    private nonisolated func runGitProcess(fullArgs: [String], command: String, at repoURL: URL, environment: [String: String]?, allowNonZeroExit: Bool, timeout: TimeInterval) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = fullArgs
@@ -558,7 +619,6 @@ actor GitService {
                     do {
                         try proc.run()
                     } catch {
-                        if logErrors { debugLog("[ERROR] \(repoName) failed to launch: \(command) — \(error.localizedDescription)") }
                         state.finish(.failure(GitServiceError.commandFailed(error.localizedDescription)))
                         return
                     }
@@ -583,7 +643,6 @@ actor GitService {
                     let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
                     if proc.terminationStatus != 0 && !allowNonZeroExit {
                         let detail = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-                        debugLog("[ERROR] \(repoName) exit \(proc.terminationStatus): \(command) — \(detail.isEmpty ? "Unknown error" : detail)")
                         state.finish(.failure(GitServiceError.commandFailed(detail.isEmpty ? "Unknown error" : detail)))
                     } else {
                         state.finish(.success(output))
@@ -595,7 +654,6 @@ actor GitService {
                 // SIGTERM (or is wedged) still dies. Guard pid > 0: kill(0, …) hits our own group.
                 DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                     guard !state.isFinished else { return }
-                    debugLog("[TIMEOUT] \(repoName) exceeded \(String(format: "%.0f", timeout))s, killing: \(command)")
                     if proc.isRunning {
                         proc.terminate()
                         if proc.processIdentifier > 0 { kill(proc.processIdentifier, SIGKILL) }
@@ -669,6 +727,7 @@ actor GitService {
                 .components(separatedBy: .newlines)
                 .filter { $0.count >= 4 }
                 .count
+            let inProgress = getInProgressOperation(at: repoURL)
 
             return GitRepo(
                 name: name,
@@ -681,10 +740,9 @@ actor GitService {
                 behindCount: aheadBehind?.behind,
                 hasRemoteBranch: aheadBehind?.hasUpstream ?? false,
                 changedFilesCount: status.hasChanges ? changedFiles : nil,
-                inProgressOperation: getInProgressOperation(at: repoURL)
+                inProgressOperation: inProgress
             )
         } catch {
-            debugLog("[ERROR] getRepoInfo: \(error.localizedDescription)")
             return GitRepo(
                 name: name,
                 url: repoURL,
