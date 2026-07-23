@@ -233,6 +233,7 @@ extension TabContentView {
                             Task { await viewModel.toggleRunScripts(for: project) }
                         }
                     )
+                    .id(vm.updateHash)
                     Divider()
                 }
             }

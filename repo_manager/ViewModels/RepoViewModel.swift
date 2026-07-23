@@ -29,6 +29,8 @@ final class RepoViewModel: ObservableObject, Identifiable {
     // Operation failures for this repo, shown in the top-right banner stack.
     // Never auto-cleared — the user dismisses each banner explicitly.
     @Published var banners: [BannerItem] = []
+    
+    @Published var updateHash: String = UUID().uuidString
 
     // Stable across the object's life (derived from the repo path, which never changes here).
     let id: UUID
@@ -55,6 +57,7 @@ final class RepoViewModel: ObservableObject, Identifiable {
 
     func reload() async {
         repo = await gitService.getRepoInfo(at: repo.url)
+        updateHash = UUID().uuidString
     }
 
     // MARK: - Banners
