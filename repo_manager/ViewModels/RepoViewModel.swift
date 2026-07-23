@@ -31,6 +31,7 @@ final class RepoViewModel: ObservableObject, Identifiable {
     @Published var banners: [BannerItem] = []
     
     @Published var updateHash: String = UUID().uuidString
+    private var updateHashCount = 1
 
     // Stable across the object's life (derived from the repo path, which never changes here).
     let id: UUID
@@ -57,7 +58,10 @@ final class RepoViewModel: ObservableObject, Identifiable {
 
     func reload() async {
         repo = await gitService.getRepoInfo(at: repo.url)
-        updateHash = UUID().uuidString
+        if updateHashCount > 0 {
+            updateHash = UUID().uuidString
+            updateHashCount -= 1
+        }
     }
 
     // MARK: - Banners
