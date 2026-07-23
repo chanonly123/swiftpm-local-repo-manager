@@ -27,5 +27,6 @@ struct OperationResult: Identifiable {
         case squash = "Squash"
         case continueOperation = "Continue"
         case abortOperation = "Abort"
+        case applyPatch = "Apply Patch"
     }
 }

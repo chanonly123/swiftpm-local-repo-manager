@@ -16,6 +16,9 @@ struct RepoRowView: View {
     @State private var showSquashSheet = false
     @State private var showForcePushConfirmation = false
     @State private var showHardResetConfirmation = false
+    @State private var showRecheckoutSheet = false
+    @State private var showApplyPatchConfirmation = false
+    @State private var pendingPatchURL: URL?
     @State private var isHovering = false
 
     // Convenience — the live repo data.
@@ -66,6 +69,9 @@ struct RepoRowView: View {
         .sheet(isPresented: $showSquashSheet) {
             SquashCommitsSheet(vm: vm)
         }
+        .sheet(isPresented: $showRecheckoutSheet) {
+            RecheckoutSheet(vm: vm)
+        }
         .alert("⚠️ Force Push Warning", isPresented: $showForcePushConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Force Push", role: .destructive) {
@@ -81,6 +87,13 @@ struct RepoRowView: View {
             }
         } message: {
             Text("This will permanently discard ALL uncommitted changes and untracked files in \(repo.name).\n\nThis action CANNOT be undone.")
+        }
+        .alert("Apply Diff/Patch", isPresented: $showApplyPatchConfirmation, presenting: pendingPatchURL) { patchURL in
+            Button("Cancel", role: .cancel) { }
+            Button("Choose File…") { choosePatchFile() }
+            Button("Apply") { applyPatch(patchURL) }
+        } message: { patchURL in
+            Text("Apply \(patchURL.lastPathComponent) to \(repo.name) using a 3-way merge (git apply --3way).\n\nConflicts, if any, are left as markers in the affected files — nothing is committed.")
         }
     }
 
@@ -258,11 +271,14 @@ struct RepoRowView: View {
             Button(action: { Task { await vm.fetch() } }) {
                 Label("Fetch", systemImage: "arrow.down.circle")
             }
-            Button(action: { Task { await vm.recheckout() } }) {
+            Button(action: { showRecheckoutSheet = true }) {
                 Label("Recheckout", systemImage: "arrow.clockwise.circle")
             }
             Button(action: { showNewBranchSheet = true }) {
                 Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
+            }
+            Button(action: { startApplyPatch() }) {
+                Label("Apply Diff/Patch…", systemImage: "doc.badge.plus")
             }
             Divider()
             if repo.currentBranch != nil {
@@ -371,6 +387,41 @@ struct RepoRowView: View {
             return .red
         case .loading:
             return .gray
+        }
+    }
+
+    // Offer the repo's last-used patch file if we have one; otherwise go straight to the picker.
+    private func startApplyPatch() {
+        if let recent = RecentPatchFileStore.recent(for: repo.url) {
+            pendingPatchURL = recent
+            showApplyPatchConfirmation = true
+        } else {
+            choosePatchFile()
+        }
+    }
+
+    private func choosePatchFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a diff/patch file to apply to \(repo.name)"
+        if let recent = RecentPatchFileStore.recent(for: repo.url) {
+            panel.directoryURL = recent.deletingLastPathComponent()
+        }
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            RecentPatchFileStore.save(url, for: repo.url)
+            pendingPatchURL = url
+            showApplyPatchConfirmation = true
+        }
+    }
+
+    private func applyPatch(_ patchURL: URL) {
+        Task {
+            let didAccess = patchURL.startAccessingSecurityScopedResource()
+            defer { if didAccess { patchURL.stopAccessingSecurityScopedResource() } }
+            await vm.applyPatch(patchURL: patchURL)
         }
     }
 

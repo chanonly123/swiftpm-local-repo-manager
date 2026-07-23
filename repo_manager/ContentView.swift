@@ -268,6 +268,8 @@ extension TabContentView {
 
             parallelPicker
 
+            fetchAllButton
+
             // Operation buttons
             if viewModel.isPerformingOperation {
                 operationProgress
@@ -294,6 +296,15 @@ extension TabContentView {
             .frame(width: 80)
             .disabled(viewModel.isPerformingOperation)
         }
+    }
+
+    // Quick-fetch every scanned repo, independent of selection
+    private var fetchAllButton: some View {
+        Button(action: { Task { await viewModel.fetchAll() } }) {
+            Label("Fetch All", systemImage: "arrow.down.circle")
+        }
+        .help("Fetch every repository, regardless of selection")
+        .disabled(viewModel.isPerformingOperation || viewModel.repoViewModels.isEmpty)
     }
 
     // Live progress + Stop while a batch operation runs
@@ -517,32 +528,34 @@ extension TabContentView {
         .task { await viewModel.loadRecheckoutBranches() }
     }
 
+    // Recently used branches, shown as their own section above "All Branches" — only while
+    // the field is empty; once the user starts typing, the ranked search below is enough.
+    private var recentRecheckoutBranchSuggestions: [RecentBranch] {
+        guard viewModel.customBranchInput.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        return viewModel.recentRecheckoutBranches
+    }
+
     // Filterable list of branches (local + remote) across the selected repos
     private var recheckoutBranchSuggestions: [String] {
-        BranchSearch.ranked(viewModel.recheckoutBranches, query: viewModel.customBranchInput)
+        BranchSearch.ranked(viewModel.recheckoutBranches, query: viewModel.customBranchInput, excluding: Set(recentRecheckoutBranchSuggestions.map(\.name)))
     }
 
     @ViewBuilder
     private var recheckoutBranchList: some View {
-        if !recheckoutBranchSuggestions.isEmpty {
+        if !recentRecheckoutBranchSuggestions.isEmpty || !recheckoutBranchSuggestions.isEmpty {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(recheckoutBranchSuggestions, id: \.self) { branch in
-                        Button(action: { recheckout(to: branch) }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.triangle.branch")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                Text(branch)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Spacer()
-                            }
-                            .contentShape(Rectangle())
-                            .padding(.vertical, 5)
-                            .padding(.horizontal, 8)
+                    if !recentRecheckoutBranchSuggestions.isEmpty {
+                        recheckoutSectionHeader("Recent")
+                        ForEach(recentRecheckoutBranchSuggestions, id: \.name) { recent in
+                            recheckoutRecentBranchRow(recent)
                         }
-                        .buttonStyle(.plain)
+                        if !recheckoutBranchSuggestions.isEmpty {
+                            recheckoutSectionHeader("All Branches")
+                        }
+                    }
+                    ForEach(recheckoutBranchSuggestions, id: \.self) { branch in
+                        recheckoutBranchRow(branch, icon: "arrow.triangle.branch")
                     }
                 }
             }
@@ -558,6 +571,54 @@ extension TabContentView {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func recheckoutSectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+    }
+
+    private func recheckoutBranchRow(_ branch: String, icon: String) -> some View {
+        Button(action: { recheckout(to: branch) }) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(branch)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func recheckoutRecentBranchRow(_ recent: RecentBranch) -> some View {
+        Button(action: { recheckout(to: recent.name) }) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(recent.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Text(recent.relativeDescription)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+        }
+        .buttonStyle(.plain)
     }
 
     private func recheckout(to branch: String) {

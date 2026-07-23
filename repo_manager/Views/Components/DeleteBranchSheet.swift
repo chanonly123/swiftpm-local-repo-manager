@@ -23,20 +23,33 @@ struct DeleteBranchSheet: View {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // Existing branches other than the current one (a checked-out branch can't be deleted),
-    // ranked: prefix matches first, then alphabetical.
+    // Recently used branches, shown as their own section above "All Branches" — only while
+    // the field is empty; once the user starts typing, the ranked search below is enough.
+    private var recentMatches: [RecentBranch] {
+        guard trimmedQuery.isEmpty else { return [] }
+        let current = repo.currentBranch
+        return RecentBranchStore.recent(for: repo.url).filter { branches.contains($0.name) && $0.name != current }
+    }
+
+    // Existing branches other than the current one (a checked-out branch can't be deleted)
+    // and anything already shown in the Recent section, ranked: prefix matches first, then
+    // alphabetical.
     private var allMatches: [String] {
-        BranchSearch.ranked(branches, query: trimmedQuery, excluding: repo.currentBranch.map { [$0] } ?? [])
+        var excluded = repo.currentBranch.map { Set([$0]) } ?? []
+        excluded.formUnion(recentMatches.map(\.name))
+        return BranchSearch.ranked(branches, query: trimmedQuery, excluding: excluded)
     }
 
     private var suggestions: [String] { Array(allMatches.prefix(suggestionLimit)) }
     private var hiddenMatchCount: Int { max(0, allMatches.count - suggestions.count) }
 
-    // The branch that would be deleted — an exact name match, else the first suggestion.
-    // Never the current branch, so deleting it is always safe.
+    // The branch that would be deleted — an exact name match, else the most recent branch
+    // (when the field is empty), else the first suggestion. Never the current branch, so
+    // deleting it is always safe.
     private var selectedBranch: String? {
         if trimmedQuery == repo.currentBranch { return nil }
         if branches.contains(trimmedQuery) { return trimmedQuery }
+        if trimmedQuery.isEmpty { return recentMatches.first?.name ?? suggestions.first }
         return suggestions.first
     }
 
@@ -111,31 +124,21 @@ struct DeleteBranchSheet: View {
 
     @ViewBuilder
     private var suggestionList: some View {
-        if !suggestions.isEmpty {
+        if !recentMatches.isEmpty || !suggestions.isEmpty {
             VStack(spacing: 0) {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(suggestions, id: \.self) { branch in
-                            Button(action: { query = branch }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "arrow.branch")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.secondary)
-                                    Text(branch)
-                                        .font(.system(size: 12))
-                                        .lineLimit(1)
-                                    Spacer(minLength: 0)
-                                    if branch == selectedBranch {
-                                        Image(systemName: "return")
-                                            .font(.system(size: 9))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 6)
-                                .contentShape(Rectangle())
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if !recentMatches.isEmpty {
+                            sectionHeader("Recent")
+                            ForEach(recentMatches, id: \.name) { recent in
+                                recentBranchRow(recent)
                             }
-                            .buttonStyle(.plain)
+                            if !suggestions.isEmpty {
+                                sectionHeader("All Branches")
+                            }
+                        }
+                        ForEach(suggestions, id: \.self) { branch in
+                            branchRow(branch, icon: "arrow.branch")
                         }
                     }
                 }
@@ -158,6 +161,64 @@ struct DeleteBranchSheet: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 5))
         }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.top, 5)
+            .padding(.bottom, 2)
+    }
+
+    private func branchRow(_ branch: String, icon: String) -> some View {
+        Button(action: { query = branch }) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text(branch)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if branch == selectedBranch {
+                    Image(systemName: "return")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func recentBranchRow(_ recent: RecentBranch) -> some View {
+        Button(action: { query = recent.name }) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text(recent.name)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text(recent.relativeDescription)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                if recent.name == selectedBranch {
+                    Image(systemName: "return")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func submit() {

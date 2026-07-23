@@ -426,6 +426,16 @@ actor GitService {
         return "✓ Cleaned \(removed) untracked/ignored item(s)"
     }
 
+    // Apply a diff/patch file to the working tree with a 3-way merge fallback (uses the blob
+    // info recorded in the patch to merge instead of failing outright on context mismatches).
+    // Leaves conflict markers in affected files on partial failure; nothing is committed.
+    nonisolated func applyPatch(at repoURL: URL, patchURL: URL) async throws -> String {
+        // Mutating and non-idempotent: a retry after a partial apply could double-apply hunks
+        // or conflict differently, so no auto-retry (same reasoning as merge/rebase).
+        _ = try await runGitCommand(args: ["apply", "--3way", patchURL.path], at: repoURL, timeout: GitService.networkTimeout, retries: 0)
+        return "✓ Applied \(patchURL.lastPathComponent)"
+    }
+
     // Get ahead/behind counts relative to upstream, plus whether the branch is actually
     // published (has its own remote branch / configured upstream — not just the fork-point
     // fallback). `hasUpstream == false` means the branch exists only locally: the UI offers
@@ -558,10 +568,14 @@ actor GitService {
                     let group = DispatchGroup()
                     nonisolated(unsafe) var outputData = Data()
                     nonisolated(unsafe) var errorData = Data()
+                    // .userInitiated to match the worker thread that's about to block on
+                    // group.wait() below — a higher-QoS thread waiting on lower-QoS readers is
+                    // a priority inversion (flagged by the Thread Performance Checker), since
+                    // DispatchGroup.wait() can't donate priority the way a direct call would.
                     group.enter()
-                    DispatchQueue.global(qos: .utility).async { outputData = (try? outHandle.readToEnd()) ?? Data(); group.leave() }
+                    DispatchQueue.global(qos: .userInitiated).async { outputData = (try? outHandle.readToEnd()) ?? Data(); group.leave() }
                     group.enter()
-                    DispatchQueue.global(qos: .utility).async { errorData = (try? errHandle.readToEnd()) ?? Data(); group.leave() }
+                    DispatchQueue.global(qos: .userInitiated).async { errorData = (try? errHandle.readToEnd()) ?? Data(); group.leave() }
                     group.wait()
                     proc.waitUntilExit()
 

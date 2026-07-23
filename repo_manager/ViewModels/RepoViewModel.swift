@@ -153,29 +153,48 @@ final class RepoViewModel: ObservableObject, Identifiable {
     }
 
     @discardableResult func recheckout(toBranch: String? = nil) async -> OperationResult {
-        await perform(.recheckout) { try await self.gitService.recheckout(at: $0.url, toBranch: toBranch) }
+        let result = await perform(.recheckout) { try await self.gitService.recheckout(at: $0.url, toBranch: toBranch) }
+        if result.success, let branch = toBranch ?? repo.currentBranch {
+            RecentBranchStore.record(branch, for: repo.url)
+        }
+        return result
+    }
+
+    @discardableResult func applyPatch(patchURL: URL) async -> OperationResult {
+        await perform(.applyPatch) { try await self.gitService.applyPatch(at: $0.url, patchURL: patchURL) }
     }
 
     @discardableResult func merge(branch: String) async -> OperationResult {
-        await perform(.merge) { try await self.gitService.merge(at: $0.url, branch: branch) }
+        let result = await perform(.merge) { try await self.gitService.merge(at: $0.url, branch: branch) }
+        if result.success { RecentBranchStore.record(branch, for: repo.url) }
+        return result
     }
 
     @discardableResult func rebase(onto branch: String) async -> OperationResult {
         let result = await perform(.rebase) { try await self.gitService.rebase(at: $0.url, onto: branch) }
-        if result.success { needsForcePush = true }
+        if result.success {
+            needsForcePush = true
+            RecentBranchStore.record(branch, for: repo.url)
+        }
         return result
     }
 
     @discardableResult func switchBranch(name: String, stashChanges: Bool) async -> OperationResult {
-        await perform(.switchBranch) { try await self.gitService.switchBranch(at: $0.url, name: name, stashChanges: stashChanges) }
+        let result = await perform(.switchBranch) { try await self.gitService.switchBranch(at: $0.url, name: name, stashChanges: stashChanges) }
+        if result.success { RecentBranchStore.record(name, for: repo.url) }
+        return result
     }
 
     @discardableResult func createBranch(name: String, stashChanges: Bool) async -> OperationResult {
-        await perform(.createBranch) { try await self.gitService.createBranch(at: $0.url, name: name, stashChanges: stashChanges) }
+        let result = await perform(.createBranch) { try await self.gitService.createBranch(at: $0.url, name: name, stashChanges: stashChanges) }
+        if result.success { RecentBranchStore.record(name, for: repo.url) }
+        return result
     }
 
     @discardableResult func deleteBranch(name: String, deleteRemote: Bool) async -> OperationResult {
-        await perform(.deleteBranch) { try await self.gitService.deleteBranch(at: $0.url, name: name, deleteRemote: deleteRemote) }
+        let result = await perform(.deleteBranch) { try await self.gitService.deleteBranch(at: $0.url, name: name, deleteRemote: deleteRemote) }
+        if result.success { RecentBranchStore.remove(name, for: repo.url) }
+        return result
     }
 
     // Squash the most recent `count` commits (a contiguous run from HEAD) into one.

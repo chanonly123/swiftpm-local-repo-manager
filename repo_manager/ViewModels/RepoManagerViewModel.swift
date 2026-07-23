@@ -413,6 +413,11 @@ class RepoManagerViewModel: ObservableObject {
         await performBatch("fetch", on: selectedRepositoryVMs) { await $0.fetch() }
     }
 
+    // Fetch every scanned repository, regardless of selection
+    func fetchAll() async {
+        await performBatch("fetch", on: repoViewModels) { await $0.fetch() }
+    }
+
     // Recheckout selected repositories to current branch
     func recheckoutCurrentBranch() async {
         await performBatch("recheckout", on: selectedRepositoryVMs) { await $0.recheckout() }
@@ -427,6 +432,13 @@ class RepoManagerViewModel: ObservableObject {
         guard let firstVM = selectedRepositoryVMs.first else { return }
         let branches = (try? await firstVM.gitService.getBranches(at: firstVM.repo.url)) ?? []
         recheckoutBranches = branches.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    // Recently used branches for the first selected repo (same repo the popup's branch list is
+    // scoped to), shown as a "Recent" section above the full list.
+    var recentRecheckoutBranches: [RecentBranch] {
+        guard let firstVM = selectedRepositoryVMs.first else { return [] }
+        return RecentBranchStore.recent(for: firstVM.repo.url).filter { recheckoutBranches.contains($0.name) }
     }
 
     // Recheckout selected repositories to custom branch
