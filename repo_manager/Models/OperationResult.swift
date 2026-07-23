@@ -14,6 +14,8 @@ struct OperationResult: Identifiable {
         case recheckout = "Recheckout"
         case hardReset = "Hard Reset"
         case clean = "Clean"
+        case stash = "Stash"
+        case stashPop = "Stash Pop"
         case push = "Push"
         case publish = "Publish"
         case forcePush = "Force Push"

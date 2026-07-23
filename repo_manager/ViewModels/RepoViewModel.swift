@@ -150,6 +150,14 @@ final class RepoViewModel: ObservableObject, Identifiable {
         await perform(.clean) { try await self.gitService.clean(at: $0.url) }
     }
 
+    @discardableResult func stash() async -> OperationResult {
+        await perform(.stash) { try await self.gitService.stash(at: $0.url) }
+    }
+
+    @discardableResult func stashPop() async -> OperationResult {
+        await perform(.stashPop) { try await self.gitService.stashPop(at: $0.url) }
+    }
+
     @discardableResult func recheckout(toBranch: String? = nil) async -> OperationResult {
         let result = await perform(.recheckout) { try await self.gitService.recheckout(at: $0.url, toBranch: toBranch) }
         if result.success, let branch = toBranch ?? repo.currentBranch {

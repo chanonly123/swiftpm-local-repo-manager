@@ -41,7 +41,6 @@ struct RepoRowView: View {
             xcodeTasksMenu
             terminalButton
             pathButton
-            copyMenu
             diffHistoryButton
         }
         .textSelection(.disabled)
@@ -269,31 +268,6 @@ struct RepoRowView: View {
         .help("Open in Finder")
     }
 
-    // Copy button — quick clipboard actions for common repo identifiers.
-    private var copyMenu: some View {
-        Menu {
-            Button(action: { copyToClipboard(repo.url.path) }) {
-                Label("Copy Directory Path", systemImage: "folder")
-            }
-            Button(action: { copyToClipboard(repo.name) }) {
-                Label("Copy Directory Name", systemImage: "textformat")
-            }
-            if let branch = repo.currentBranch {
-                Button(action: { copyToClipboard(branch) }) {
-                    Label("Copy Branch Name", systemImage: "arrow.branch")
-                }
-            }
-        } label: {
-            Image(systemName: "doc.on.doc")
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Copy")
-    }
-
     // Git operations menu items (merge / rebase, plus continue / abort when mid-operation) —
     // shown as a right-click context menu on the row rather than a dedicated toolbar button.
     @ViewBuilder
@@ -317,6 +291,13 @@ struct RepoRowView: View {
                 Label("Recheckout", systemImage: "arrow.clockwise.circle")
             }
             Divider()
+            Button(action: { Task { await vm.stash() } }) {
+                Label("Stash", systemImage: "tray.and.arrow.down")
+            }
+            Button(action: { Task { await vm.stashPop() } }) {
+                Label("Stash Pop", systemImage: "tray.and.arrow.up")
+            }
+            Divider()
             Button(action: { showNewBranchSheet = true }) {
                 Label("Switch or Create Branch…", systemImage: "arrow.triangle.branch")
             }
@@ -326,6 +307,20 @@ struct RepoRowView: View {
             }
             Button(action: { showCreateDiffSheet = true }) {
                 Label("Create Diff…", systemImage: "doc.text.magnifyingglass")
+            }
+            Divider()
+            Menu("Copy") {
+                Button(action: { copyToClipboard(repo.url.path) }) {
+                    Label("Directory Path", systemImage: "folder")
+                }
+                Button(action: { copyToClipboard(repo.name) }) {
+                    Label("Directory Name", systemImage: "textformat")
+                }
+                if let branch = repo.currentBranch {
+                    Button(action: { copyToClipboard(branch) }) {
+                        Label("Branch Name", systemImage: "arrow.branch")
+                    }
+                }
             }
             Divider()
             if repo.currentBranch != nil {

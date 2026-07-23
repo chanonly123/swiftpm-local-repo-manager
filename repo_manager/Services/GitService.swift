@@ -470,6 +470,22 @@ actor GitService {
         return messages.joined(separator: "\n")
     }
 
+    // Stash uncommitted changes (including untracked files). `git stash push` exits 0 with
+    // "No local changes to save" when there's nothing to stash — check first so that case
+    // surfaces as an error instead of silently succeeding.
+    nonisolated func stash(at repoURL: URL) async throws -> String {
+        let status = try await getStatus(at: repoURL)
+        guard status.hasChanges else {
+            throw GitServiceError.commandFailed("No local changes to stash.")
+        }
+        return try await runGitCommand(args: ["stash", "push", "--include-untracked"], at: repoURL)
+    }
+
+    // Pop the most recent stash (stash@{0}).
+    nonisolated func stashPop(at repoURL: URL) async throws -> String {
+        try await runGitCommand(args: ["stash", "pop"], at: repoURL)
+    }
+
     // Remove ALL untracked and ignored files/directories (git clean -xdf). Unlike the clean
     // baked into hardReset (-f -d), the -x flag also deletes ignored files — build artifacts,
     // caches, DerivedData, etc. Does not touch tracked changes.
